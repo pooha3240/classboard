@@ -12,5 +12,8 @@
     "bindings": [{ "name": "ROOM", "class_name": "ClassRoom" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ClassRoom"] }],
+  // workers.dev 주소는 쓰고, 브랜치별 미리보기 주소는 만들지 않음
+  "workers_dev": true,
+  "preview_urls": false,
   "observability": { "enabled": true }
 }
