@@ -13,8 +13,10 @@
  *   "ping" → "pong" 은 자동 응답(DO를 깨우지 않음)
  */
 import { DurableObject } from "cloudflare:workers";
+import { Archiver, ARCHIVE_AFTER_DAYS } from "./archive";
+import { Backup, BACKUP_VERSION } from "./backup";
 import { PlanStore, PlanError, neisCall, neisSchools, NEIS_TT, type NeisCfg } from "./plan";
-import { MediaStore, MediaError, MAX_PDF_PAGES, imageMeta, pageSizeFor, sniffImage } from "./media";
+import { MediaStore, MediaError, MAX_PDF_PAGES, R2_CAP, imageMeta, pageSizeFor, sniffImage } from "./media";
 import { sign, verify, TokenError, randomKey, hashPassword, checkPassword, sha256, shortSig, type TokenPayload } from "./lib/token";
 import { currentPeriod, kstNow, nextBoundary, periodLabel, normalize, type Bell } from "./lib/periods";
 import {
@@ -22,7 +24,7 @@ import {
   validateObj, cleanWebUrl, cleanColor, num, type Obj,
 } from "./lib/validate";
 
-export const SERVER_VERSION = "0.9.0";
+export const SERVER_VERSION = "0.10.0";
 
 const TEACHER_DEVICES = new Set(["display", "teacher-pc", "teacher-tablet"]);
 const TOKEN_DAYS = 30;
@@ -111,6 +113,9 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
   private sql: SqlStorage;
   private media: MediaStore;
   private plan: PlanStore;
+  private r2: R2Bucket | undefined;
+  private archive: Archiver;
+  private backup: Backup;
   private pages = new Map<number, PageState>();
   private loginFails = { n: 0, until: 0 };
   private pinFails = new Map<number, { n: number; until: number }>();
@@ -118,8 +123,12 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
   constructor(ctx: DurableObjectState, env: Record<string, unknown>) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
-    this.media = new MediaStore(this.sql, { total: DB_BUDGET, dbSize: () => this.sql.databaseSize, pinned: () => this.plan.pinnedSets() });
+    this.r2 = (env.FILES as R2Bucket | undefined) ?? undefined;       // 저장판이면 R2 가 연결됨
+    this.media = new MediaStore(this.sql, { total: DB_BUDGET, dbSize: () => this.sql.databaseSize, pinned: () => this.plan.pinnedSets(),
+      r2: this.r2, archived: () => this.archivedBytes() });
     this.plan = new PlanStore(this.sql, this.media);
+    this.archive = new Archiver(this.sql, this.r2);
+    this.backup = new Backup(this.sql, this.media, this.archive, (k) => this.cfg(k), (k, v) => this.setCfg(k, v));
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
     ctx.blockConcurrencyWhile(async () => this.migrate());
   }
@@ -154,6 +163,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
         expires INTEGER NOT NULL, done INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
     `);
     this.media.migrate();
+    this.archive.migrate();
     this.plan.migrate();
     this.sql.exec(`CREATE TABLE IF NOT EXISTS timetable (weekday INTEGER NOT NULL, period INTEGER NOT NULL, subject TEXT NOT NULL, PRIMARY KEY (weekday, period))`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS page_thumbs (page_id INTEGER PRIMARY KEY, seq INTEGER NOT NULL, data BLOB NOT NULL)`);
@@ -167,6 +177,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
     else this.sql.exec("INSERT INTO config (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v", k, String(v));
   }
   private configured(): boolean { return !!this.cfg("secret"); }
+  private archivedBytes(): number { return this.archive ? this.archive.totalBytes() : 0; }
 
   /* 나이스 시간표 자동 받기(선택): 교사가 설정에서 인증키·학교를 넣으면 켜짐 */
   private neisCfg(): NeisCfg | null {
@@ -375,7 +386,8 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
     if (th && method === "GET") {
       const pid = Number(th[1]);
       if (!this.configured() || url.searchParams.get("s") !== await shortSig(this.cfg("secret")!, `thumb:${pid}`)) return new Response("not found", { status: 404 });
-      const r = this.sql.exec<{ data: ArrayBuffer }>("SELECT data FROM page_thumbs WHERE page_id = ?", pid).toArray()[0];
+      const r = this.sql.exec<{ data: ArrayBuffer }>("SELECT data FROM page_thumbs WHERE page_id = ?", pid).toArray()[0]
+        ?? await this.archive.thumb(pid).then((d) => (d ? { data: d } : undefined));          // 저장판: R2 로 옮긴 수업
       if (!r) return new Response("not found", { status: 404 });
       return new Response(r.data, { headers: { "content-type": sniffImage(new Uint8Array(r.data)) ?? "image/webp",
         "cache-control": "private, max-age=31536000, immutable", "x-content-type-options": "nosniff" } });
@@ -514,6 +526,53 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       this.sql.exec("DELETE FROM arrangements WHERE id = ?", Number(del[1]));
       return json({ ok: true });
     }
+    /* 시험용(로컬 .dev.vars 의 DEV_TEST=1 일 때만): 수업 날짜 바꾸기, 보관 바로 돌리기 */
+    if (path.startsWith("/_test/") && (this.env as Record<string, unknown>).DEV_TEST === "1") {
+      const b = await body();
+      if (path === "/_test/age") { this.sql.exec("UPDATE sessions SET day = ? WHERE id = ?", String(b.day), Number(b.id)); return json({ ok: true }); }
+      if (path === "/_test/archive") {
+        for (const ps of this.pages.values()) if (ps.seq > ps.saved_seq) this.savePage(ps);
+        const cutoff = new Date(Date.now() + 9 * 3600e3 - ARCHIVE_AFTER_DAYS * 86400e3).toISOString().slice(0, 10);
+        const r = await this.archive.archiveOne(cutoff, this.room()?.session ?? null, R2_CAP - this.media.usage("r2") - this.archive.totalBytes());
+        if (r === "done") for (const [id, ps] of this.pages) if (ps.session_id !== this.room()?.session) this.pages.delete(id);
+        return json({ ok: true, result: r });
+      }
+      return fail(404, "not_found", "없는 시험 요청");
+    }
+
+    /* 저장판: 백업 내려받기·되살리기 */
+    if (path.startsWith("/backup/")) {
+      if (!this.r2) return fail(404, "not_available", "백업은 저장판에서 쓸 수 있습니다");
+      if (path === "/backup/part" && method === "GET") {
+        if (!elev) return needPin();
+        return json(await this.backup.part(url.searchParams.get("cursor"), url.searchParams.get("media") === "1", SERVER_VERSION, "storage"));
+      }
+      if (u.dev) return loggedIn();                     // 되살리기는 교사 로그인(비밀번호 확인)으로만
+      if (path === "/backup/restore/begin" && method === "POST") {
+        const b = await body();
+        if (!(await checkPassword(String(b.password ?? ""), this.cfg("pw_hash")!))) return fail(403, "bad_password", "비밀번호가 맞지 않습니다");
+        const meta = (b.meta ?? {}) as Json;
+        if (meta.t !== "meta" || Number(meta.v) !== BACKUP_VERSION) return fail(400, "bad_backup", "classboard 백업 파일이 아니거나 읽을 수 없는 판입니다");
+        await this.backup.wipe();
+        this.pages.clear();
+        this.setCfg("restoring", Date.now());
+        return json({ ok: true });
+      }
+      if (!this.cfg("restoring")) return fail(409, "not_restoring", "되살리기를 처음부터 다시 시작하세요");
+      if (path === "/backup/restore/rows" && method === "POST") {
+        if (Number(req.headers.get("content-length") ?? 0) > 16 * 1024 * 1024) return fail(413, "too_large", "한 번에 보내는 양이 너무 큽니다");
+        const b = await body();
+        return json({ ok: true, ...(await this.backup.rows(Array.isArray(b.lines) ? (b.lines as Json[]) : [])) });
+      }
+      if (path === "/backup/restore/end" && method === "POST") {
+        this.setCfg("restoring", null);
+        this.pages.clear();
+        for (const ws of this.ctx.getWebSockets()) { try { ws.close(1012, "restored"); } catch { /* 이미 닫힘 */ } }   // 다시 접속하며 새 내용을 받음
+        return json({ ok: true });
+      }
+      return fail(404, "not_found", "없는 요청입니다");
+    }
+
     /* 진도표·차시 자료 */
     if (path.startsWith("/plan/")) {
       try { return await this.planRest(req, path, url, elev); } catch (e) {
@@ -630,7 +689,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       if (len > 9 * 1024 * 1024) return fail(413, "too_large", "그림이 너무 큽니다");
       const bodyBytes = new Uint8Array(await req.arrayBuffer());
       try {
-        return json(this.media.put({
+        return json(await this.media.put({
           set: n("set") || 0, i: n("i"), n: n("n"), kind: url.searchParams.get("kind") ?? "", name: url.searchParams.get("name") ?? "",
           sha: url.searchParams.get("sha") ?? "", w: n("w"), h: n("h"), thumbLen: Number(req.headers.get("x-thumb-len") ?? 0),
         }, bodyBytes));
@@ -652,8 +711,8 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       if (!elev) return needPin();
       const a = this.media.get(Number(mdel[1]));
       if (!a) return fail(404, "not_found", "자료가 없습니다");
-      this.media.deleteSet(a.set_id);
-      return json({ ok: true, usage: this.media.usage() });
+      await this.media.deleteSet(a.set_id);
+      return json({ ok: true, usage: this.media.activeUsage() });
     }
     const snap = /^\/pages\/(\d+)\/snapshot$/.exec(path);
     if (snap && method === "PUT") {
@@ -744,7 +803,8 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
 
   private storage() {
     const db = this.sql.databaseSize;
-    return { db, budget: DB_BUDGET, media: this.media.usage() };
+    return { db, budget: DB_BUDGET, media: this.media.usage("do"),
+      r2: this.r2 ? { cap: R2_CAP, media: this.media.usage("r2"), archive: this.archive.totalBytes() } : null };
   }
 
   private async history(req: Request, path: string, url: URL): Promise<Response> {
@@ -760,8 +820,9 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       const sessions = [];
       for (const r of rows) {
         if (!Number(r.used)) continue;                         // 아무것도 쓰지 않은 수업은 숨김
-        const tp = r.thumb_page ? Number(r.thumb_page) : 0;
-        const tseq = tp ? this.sql.exec<{ seq: number }>("SELECT seq FROM page_thumbs WHERE page_id = ?", tp).one().seq : 0;
+        let tp = r.thumb_page ? Number(r.thumb_page) : 0;
+        let tseq = tp ? this.sql.exec<{ seq: number }>("SELECT seq FROM page_thumbs WHERE page_id = ?", tp).one().seq : 0;
+        if (!tp && r.archived) { tp = this.archive.thumbsOf(Number(r.id))[0] ?? 0; tseq = 0; }     // 저장판: R2 로 옮긴 수업
         sessions.push({ ...this.sessionMeta(r), pages: Number(r.used), joint: null, first_page: Number(r.first_page) || null,
           started_at: new Date(Number(r.created_at) + 9 * 3600e3).toISOString().slice(11, 16),
           thumb: tp ? await this.thumbUrl(tp, tseq) : null });
@@ -774,6 +835,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       if (!sess || sess.deleted) return fail(404, "not_found", "기록이 없습니다");
       if (method === "DELETE") {
         if (this.room()?.session === sess.id) return fail(409, "in_use", "지금 칠판에 열려 있는 수업은 지울 수 없습니다. 다른 수업으로 옮긴 뒤 지우세요");
+        if (sess.archived) await this.archive.remove(sess.id as number);
         const ids = this.sql.exec<{ id: number }>("SELECT id FROM pages WHERE session_id = ?", sess.id).toArray().map((x) => x.id);
         for (const id of ids) {
           this.sql.exec("DELETE FROM ops WHERE page_id = ?", id);
@@ -790,15 +852,34 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
         `SELECT p.id, p.page_no, p.w, p.h, p.last_seq, p.bg_type, t.seq AS tseq FROM pages p LEFT JOIN page_thumbs t ON t.page_id = p.id
          WHERE p.session_id = ? AND ${ClassRoom.USED} ORDER BY p.page_no`, sess.id).toArray();
       const pages = [];
+      const archivedThumbs = sess.archived ? new Set(this.archive.thumbsOf(sess.id as number)) : null;
       for (const p of rows) {
+        const hasThumb = p.tseq !== null || !!archivedThumbs?.has(p.id);
         pages.push({ id: p.id, page_no: p.page_no, w: p.w, h: p.h, seq: p.last_seq, bg: p.bg_type === "image" || p.bg_type === "pdf",
-          thumb: p.tseq !== null ? await this.thumbUrl(p.id, p.tseq) : null, image: null });
+          thumb: hasThumb ? await this.thumbUrl(p.id, p.tseq ?? 0) : null, image: null });
       }
       return json({ session: { ...this.sessionMeta(sess), grade: k.grade, class: k.class }, pages });
     }
     const st = /^\/history\/pages\/(\d+)\/(state|ops)$/.exec(path);
     if (st && method === "GET") {
-      const ps = this.getPage(Number(st[1]));
+      const pid = Number(st[1]);
+      const sid = this.sql.exec<{ s: number }>("SELECT session_id AS s FROM pages WHERE id = ?", pid).toArray()[0]?.s;
+      if (sid !== undefined && this.archive.isArchived(sid)) {
+        // 저장판: R2 로 옮긴 수업은 보관본에서 읽음(칠판 저장소로 되돌리지 않음)
+        const data = await this.archive.load(sid);
+        const ap = data?.pages.find((x) => x.id === pid);
+        const row = this.sql.exec<PageRow>("SELECT * FROM pages WHERE id = ?", pid).toArray()[0];
+        if (!ap || !row) return fail(404, "not_found", "보관한 기록을 찾지 못했습니다");
+        const ps = new PageState({ ...row, state_json: ap.state_json, state_seq: ap.state_seq });
+        if (ap.state_json) for (const o of JSON.parse(ap.state_json).objs ?? []) ps.objs.set(o.id, o);
+        for (const op of ap.ops) if (op.seq > ps.seq) { ps.apply(op.kind, op.obj_id, op.data ? JSON.parse(op.data) : null); ps.seq = op.seq; }
+        if (st[2] === "state") return json(ps.toClient());
+        const ops = ap.ops.map((o) => ({ s: o.seq, k: o.kind, id: o.obj_id, d: o.data ? JSON.parse(o.data) : null, t: o.ts }));
+        const complete = ops.length > 0 && ops[0].s === 1;
+        const out = complete ? ops : [...ps.objs.values()].map((o, i) => ({ s: i + 1, k: "add", id: (o as Json).id, d: o, t: 0 }));
+        return json({ page: ps.meta(), ops: out, replay: complete });
+      }
+      const ps = this.getPage(pid);
       if (!ps) return fail(404, "not_found", "페이지가 없습니다");
       if (st[2] === "state") return json(ps.toClient());
       // 판서 재생: 처음부터 모든 동작과 시각. 오래되어 동작 기록을 정리한 페이지는 완성된 판서를 한 번에.
@@ -1061,11 +1142,23 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
 
   async alarm(): Promise<void> {
     this.flushPages();
-    if (Math.random() < 0.05) {                          // 가끔만: 올리다 끊긴 자료, 오래된 재생용 동작 기록 정리
-      this.media.sweep();
+    if (Math.random() < (this.r2 ? 0.25 : 0.05)) {       // 가끔만: 올리다 끊긴 자료, 오래된 판서 기록(저장판은 R2 로 옮김)
+      await this.media.sweep();
       for (const ps of this.pages.values()) if (ps.seq > ps.saved_seq) this.savePage(ps);
-      this.sql.exec(`DELETE FROM ops WHERE ts < ? AND seq <= (SELECT state_seq FROM pages WHERE pages.id = ops.page_id)`,
-        Date.now() - OPS_KEEP_DAYS * 86400e3);
+      let prune = !this.r2;
+      if (this.r2) {                                     // 저장판: 지우지 않고 R2 로 옮김. R2 한도에 걸리면 기본판처럼 정리
+        const cutoff = new Date(Date.now() + 9 * 3600e3 - ARCHIVE_AFTER_DAYS * 86400e3).toISOString().slice(0, 10);
+        const left = R2_CAP - this.media.usage("r2") - this.archive.totalBytes();
+        try {
+          const r = await this.archive.archiveOne(cutoff, this.room()?.session ?? null, left);
+          if (r === "full") prune = true;
+          if (r === "done") for (const [id, ps] of this.pages) if (ps.session_id !== this.room()?.session) this.pages.delete(id);   // 옮긴 수업이 메모리에 남지 않게
+        } catch { /* 다음에 다시 */ }
+      }
+      if (prune) {
+        this.sql.exec(`DELETE FROM ops WHERE ts < ? AND seq <= (SELECT state_seq FROM pages WHERE pages.id = ops.page_id)`,
+          Date.now() - OPS_KEEP_DAYS * 86400e3);
+      }
     }
     this.expireGrants();
     if (this.neisCfg() && Date.now() >= Number(this.cfg("neis_next") || 0)) {
@@ -1283,6 +1376,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
         }
         const s = this.getSession(Number(d.session_id));
         if (!s) return { ok: false, error: "bad_session" };
+        if (!(await this.archive.restore(s.id as number))) return { ok: false, error: "archive_missing" };   // 저장판: 보관한 수업은 되돌려서 엶
         this.switchTo(s.id as number);
         return { ok: true };
       }

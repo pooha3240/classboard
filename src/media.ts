@@ -6,10 +6,16 @@
  * - 무료 플랜의 객체당 1GB 안에서 판서 기록과 함께 쓰므로, 자료는 MEDIA_QUOTA 까지만 두고
  *   넘치면 오래 안 쓴 자료부터 지웁니다.
  * - 파일 주소에는 자료마다 무작위 키가 들어가 있어, 로그인 없이 <img> 로 바로 불러옵니다(주소를 아는 사람만).
+ *
+ * 저장판(R2 연결): 새 자료는 R2 에 `m/<id>/<key>`(미리보기 `.t`)로 두고, 한도를 크게 씁니다(R2_MEDIA_QUOTA).
+ * 기본판 때 올린 자료(loc='do')는 그대로 DO 에서 내려줍니다. R2 전체는 R2_CAP(무료 10GB 아래)에서 막습니다.
  */
 import { randomKey } from "./lib/token";
 
-export const MEDIA_QUOTA = 700 * 1000 * 1000;     // 700MB
+export const MEDIA_QUOTA = 700 * 1000 * 1000;     // 700MB (기본판, DO 안)
+export const R2_CAP = 8 * 1000 * 1000 * 1000;      // 저장판: R2 전체(자료 + 보관한 판서 기록) 8GB — 무료 10GB 를 넘지 않게
+export const R2_MEDIA_QUOTA = 6 * 1000 * 1000 * 1000;   // 그중 자료 6GB
+export const r2Key = (a: { id: number; key: string }, thumb = false) => `m/${a.id}/${a.key}${thumb ? ".t" : ""}`;
 export const MAX_PDF_PAGES = 60;
 export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;    // 한 장(쪽) 그림
 export const MAX_THUMB_BYTES = 256 * 1024;
@@ -19,7 +25,7 @@ const KINDS = new Set(["image", "pdf", "capture"]);
 export type Asset = {
   id: number; key: string; kind: string; set_id: number; page_index: number | null; pages: number;
   name: string | null; sha: string | null; mime: string; thumb_mime: string | null;
-  w: number; h: number; bytes: number; created_at: number; used_at: number; done: number;
+  w: number; h: number; bytes: number; created_at: number; used_at: number; done: number; loc: string;
 };
 
 export class MediaError extends Error {
@@ -56,12 +62,20 @@ const kst = (t: number) => new Date(t + 9 * 3600e3).toISOString().slice(5, 16).r
 
 export class MediaStore {
   /** dbSize: 객체 전체 크기(판서 기록 포함). 자료는 MEDIA_QUOTA 와 '전체 예산 - 판서 기록' 중 작은 쪽까지 */
-  constructor(private sql: SqlStorage, private budget: { total: number; dbSize: () => number; pinned?: () => Set<number> } = { total: Infinity, dbSize: () => 0 }) {}
+  constructor(private sql: SqlStorage, private budget: { total: number; dbSize: () => number; pinned?: () => Set<number>;
+    r2?: R2Bucket; archived?: () => number } = { total: Infinity, dbSize: () => 0 }) {}
 
+  get r2(): R2Bucket | undefined { return this.budget.r2; }
+  /** 새 자료를 둘 곳의 한도. 저장판: R2 자료 한도와 'R2 전체 - 보관한 판서 기록' 중 작은 쪽 */
   quota(): number {
-    const other = Math.max(0, this.budget.dbSize() - this.usage());
+    if (this.r2) return Math.max(0, Math.min(R2_MEDIA_QUOTA, R2_CAP - (this.budget.archived?.() ?? 0)));
+    const other = Math.max(0, this.budget.dbSize() - this.usage("do"));
     return Math.max(0, Math.min(MEDIA_QUOTA, this.budget.total - other));
   }
+  /** 차시에 붙인 자료(자동 정리 안 함)의 한도 */
+  pinnedQuota(): number { return this.r2 ? 2 * 1000 * 1000 * 1000 : 300 * 1000 * 1000; }
+  /** 새 자료가 들어가는 곳의 사용량 */
+  activeUsage(): number { return this.usage(this.r2 ? "r2" : "do"); }
 
   migrate(): void {
     this.sql.exec(`
@@ -75,6 +89,7 @@ export class MediaStore {
       CREATE TABLE IF NOT EXISTS asset_parts (
         asset_id INTEGER NOT NULL, part INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (asset_id, part));
     `);
+    try { this.sql.exec("ALTER TABLE assets ADD COLUMN loc TEXT NOT NULL DEFAULT 'do'"); } catch { /* 이미 있음 */ }
   }
 
   get(id: number): Asset | null {
@@ -83,16 +98,22 @@ export class MediaStore {
   setOf(setId: number): Asset[] {
     return this.sql.exec<Asset>("SELECT * FROM assets WHERE set_id = ? ORDER BY page_index, id", setId).toArray() as Asset[];
   }
-  usage(): number {
-    return this.sql.exec<{ n: number }>("SELECT COALESCE(SUM(bytes), 0) AS n FROM assets").one().n;
+  usage(loc?: "do" | "r2"): number {
+    return loc ? this.sql.exec<{ n: number }>("SELECT COALESCE(SUM(bytes), 0) AS n FROM assets WHERE loc = ?", loc).one().n
+      : this.sql.exec<{ n: number }>("SELECT COALESCE(SUM(bytes), 0) AS n FROM assets").one().n;
   }
   touch(setIds: number[]): void {
     const now = Date.now();
     for (const s of new Set(setIds)) this.sql.exec("UPDATE assets SET used_at = ? WHERE set_id = ?", now, s);
   }
-  deleteSet(setId: number): void {
+  async deleteSet(setId: number): Promise<void> {
+    const r2 = this.sql.exec<{ id: number; key: string }>("SELECT id, key FROM assets WHERE set_id = ? AND loc = 'r2'", setId).toArray();
     this.sql.exec("DELETE FROM asset_parts WHERE asset_id IN (SELECT id FROM assets WHERE set_id = ?)", setId);
     this.sql.exec("DELETE FROM assets WHERE set_id = ?", setId);
+    if (r2.length && this.r2) {
+      const keys = r2.flatMap((a) => [r2Key(a), r2Key(a, true)]);
+      for (let i = 0; i < keys.length; i += 1000) await this.r2.delete(keys.slice(i, i + 1000)).catch(() => {});
+    }
   }
 
   /** 다 올라간 같은 파일이 있으면 그것을 다시 씀(같은 PDF 를 또 올릴 때 변환·전송 생략) */
@@ -113,21 +134,22 @@ export class MediaStore {
       const first = this.setOf(r.set_id)[0];
       return { asset: first.id, kind: r.kind, name: r.name ?? "", pages: r.n, created: kst(r.created_at), thumb: fileUrl(first, first.thumb_mime !== null) };
     });
-    return { files, usage: this.usage(), quota: this.quota() };
+    return { files, usage: this.activeUsage(), quota: this.quota(), storage: this.r2 ? "r2" : "do" };
   }
 
   /** 자리가 모자라면 오래 안 쓴 자료부터 지움(지금 올리는 묶음은 빼고) */
-  private makeRoom(need: number, keepSet: number): void {
-    let used = this.usage();
+  private async makeRoom(need: number, keepSet: number): Promise<void> {
+    const loc = this.r2 ? "r2" : "do";
+    let used = this.usage(loc);
     const quota = this.quota();
     if (used + need <= quota) return;
     const pinned = this.budget.pinned ? this.budget.pinned() : new Set<number>();      // 차시에 붙인 자료는 지우지 않음
     const sets = this.sql.exec<{ set_id: number; n: number }>(
-      "SELECT set_id, SUM(bytes) AS n FROM assets WHERE set_id != ? GROUP BY set_id ORDER BY MAX(used_at) ASC", keepSet).toArray();
+      "SELECT set_id, SUM(bytes) AS n FROM assets WHERE set_id != ? AND loc = ? GROUP BY set_id ORDER BY MAX(used_at) ASC", keepSet, loc).toArray();
     for (const s of sets) {
       if (pinned.has(s.set_id)) continue;
       if (used + need <= quota) break;
-      this.deleteSet(s.set_id);
+      await this.deleteSet(s.set_id);
       used -= s.n;
     }
     if (used + need > quota) throw new MediaError(507, "full", "저장 공간이 모자랍니다. 파일을 나눠 올려 주세요");
@@ -137,7 +159,7 @@ export class MediaStore {
    * 한 장(사진 1장 또는 PDF 한 쪽) 저장. 본문 = [미리보기 그림 thumbLen 바이트][본 그림].
    * 첫 장(i=0)은 묶음을 새로 만들고, 다음 장은 set 으로 이어 붙입니다. 마지막 장이 오면 묶음을 완성으로 표시.
    */
-  put(q: { set: number; i: number; n: number; kind: string; name: string; sha: string; w: number; h: number; thumbLen: number }, body: Uint8Array): { set: number; item: ReturnType<typeof item>; done: boolean } {
+  async put(q: { set: number; i: number; n: number; kind: string; name: string; sha: string; w: number; h: number; thumbLen: number }, body: Uint8Array): Promise<{ set: number; item: ReturnType<typeof item>; done: boolean }> {
     if (!KINDS.has(q.kind)) throw new MediaError(400, "bad_kind", "자료 종류가 맞지 않습니다");
     if (!Number.isInteger(q.n) || q.n < 1 || q.n > (q.kind === "pdf" ? MAX_PDF_PAGES : 1)) {
       throw new MediaError(400, "too_many_pages", `PDF 는 ${MAX_PDF_PAGES}쪽까지 올릴 수 있습니다. 나눠서 올려 주세요`);
@@ -160,19 +182,43 @@ export class MediaStore {
       if (this.sql.exec("SELECT 1 FROM assets WHERE set_id = ? AND page_index = ?", first.id, q.i).toArray().length) throw new MediaError(409, "dup_page", "이미 올린 쪽입니다");
       setId = first.id;
     }
-    this.makeRoom(main.length + (thumb?.length ?? 0), setId);
+    await this.makeRoom(main.length + (thumb?.length ?? 0), setId);
 
     const now = Date.now();
+    const key = randomKey(12);
+    const loc = this.r2 ? "r2" : "do";
+    if (this.r2) {
+      // 기록을 먼저 넣어 번호를 받고(동시에 올려도 번호가 겹치지 않게) R2 에 올림. 실패하면 기록을 지움.
+      const id = this.sql.exec<{ id: number }>(
+        `INSERT INTO assets (key, kind, set_id, page_index, pages, name, sha, mime, thumb_mime, w, h, bytes, created_at, used_at, done, loc)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'r2') RETURNING id`,
+        key, q.kind, setId, q.kind === "pdf" ? q.i : null, q.n, q.name.slice(0, 200) || null, q.sha.slice(0, 64) || null,
+        mime, thumbMime, q.w, q.h, main.length + (thumb?.length ?? 0), now, now).one().id;
+      if (!setId) { setId = id; this.sql.exec("UPDATE assets SET set_id = ? WHERE id = ?", id, id); }
+      const meta = (ct: string) => ({ httpMetadata: { contentType: ct, cacheControl: "public, max-age=31536000, immutable" } });
+      try {
+        await this.r2.put(r2Key({ id, key }), main, meta(mime));
+        if (thumb) await this.r2.put(r2Key({ id, key }, true), thumb, meta(thumbMime!));
+      } catch {
+        this.sql.exec("DELETE FROM assets WHERE id = ?", id);
+        throw new MediaError(502, "r2_error", "저장소(R2)에 올리지 못했습니다. 잠시 뒤 다시 해 주세요");
+      }
+      return this.finishPut(q, setId, id);
+    }
     const id = this.sql.exec<{ id: number }>(
-      `INSERT INTO assets (key, kind, set_id, page_index, pages, name, sha, mime, thumb_mime, w, h, bytes, created_at, used_at, done)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0) RETURNING id`,
-      randomKey(12), q.kind, setId, q.kind === "pdf" ? q.i : null, q.n, q.name.slice(0, 200) || null, q.sha.slice(0, 64) || null,
-      mime, thumbMime, q.w, q.h, main.length + (thumb?.length ?? 0), now, now).one().id;
+      `INSERT INTO assets (key, kind, set_id, page_index, pages, name, sha, mime, thumb_mime, w, h, bytes, created_at, used_at, done, loc)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?) RETURNING id`,
+      key, q.kind, setId, q.kind === "pdf" ? q.i : null, q.n, q.name.slice(0, 200) || null, q.sha.slice(0, 64) || null,
+      mime, thumbMime, q.w, q.h, main.length + (thumb?.length ?? 0), now, now, loc).one().id;
     if (!setId) { setId = id; this.sql.exec("UPDATE assets SET set_id = ? WHERE id = ?", id, id); }
     for (let p = 0, off = 0; off < main.length; p++, off += PART) {
       this.sql.exec("INSERT INTO asset_parts (asset_id, part, data) VALUES (?, ?, ?)", id, p, main.subarray(off, off + PART));
     }
     if (thumb) this.sql.exec("INSERT INTO asset_parts (asset_id, part, data) VALUES (?, -1, ?)", id, thumb);
+    return this.finishPut(q, setId, id);
+  }
+
+  private finishPut(q: { i: number; n: number }, setId: number, id: number) {
 
     const done = q.i === q.n - 1;
     if (done) {
@@ -184,17 +230,23 @@ export class MediaStore {
   }
 
   /** 끝나지 않은 채 하루 넘게 남은 묶음(올리다 끊김) 정리 */
-  sweep(): void {
+  async sweep(): Promise<void> {
     const old = this.sql.exec<{ set_id: number }>(
       "SELECT DISTINCT set_id FROM assets WHERE done = 0 AND created_at < ?", Date.now() - 86400e3).toArray();
-    for (const s of old) this.deleteSet(s.set_id);
+    for (const s of old) await this.deleteSet(s.set_id);
   }
 
   /** 파일 내려주기(로그인 없이, 키가 맞을 때만) */
-  serve(id: number, key: string | null, thumb: boolean): Response {
+  async serve(id: number, key: string | null, thumb: boolean): Promise<Response> {
     const a = this.get(id);
     if (!a || !key || key !== a.key) return new Response("not found", { status: 404 });
     const useThumb = thumb && a.thumb_mime !== null;
+    if (a.loc === "r2") {
+      const obj = this.r2 ? await this.r2.get(r2Key(a, useThumb)) : null;
+      if (!obj) return new Response("not found", { status: 404 });
+      return new Response(obj.body, { headers: { "content-type": useThumb ? a.thumb_mime! : a.mime,
+        "cache-control": "public, max-age=31536000, immutable", "x-content-type-options": "nosniff" } });
+    }
     const parts = this.sql.exec<{ data: ArrayBuffer }>(
       useThumb ? "SELECT data FROM asset_parts WHERE asset_id = ? AND part = -1"
         : "SELECT data FROM asset_parts WHERE asset_id = ? AND part >= 0 ORDER BY part", id).toArray();

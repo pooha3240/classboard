@@ -16,6 +16,7 @@ export interface Env {
   PROBE: DurableObjectNamespace;
   ASSETS: Fetcher;
   SETUP_KEY?: string;
+  FILES?: R2Bucket;          // 저장판(wrangler.storage.jsonc)에서만 연결
 }
 
 function json(data: unknown, status = 200): Response {
@@ -58,6 +59,23 @@ export default {
       return classRoom(env).fetch(forward(req));
     }
 
+    // 저장판: R2 에 있는 자료는 DO 를 거치지 않고 바로 내려줌(주소의 키가 곧 R2 이름이라 키가 틀리면 없음).
+    // 없으면(기본판 때 올린 자료 등) 아래 DO 로 넘어감.
+    const file = env.FILES && req.method === "GET" ? /^\/eboard-api\/files\/(\d+)$/.exec(p) : null;
+    if (file) {
+      const k = url.searchParams.get("k") ?? "";
+      if (/^[A-Za-z0-9_-]{8,40}$/.test(k)) {
+        const base = `m/${file[1]}/${k}`;
+        const obj = (url.searchParams.get("t") === "1" ? await env.FILES!.get(base + ".t") : null) ?? await env.FILES!.get(base);
+        if (obj) {
+          const h = new Headers({ "cache-control": "public, max-age=31536000, immutable", "x-content-type-options": "nosniff" });
+          if (obj.httpMetadata?.contentType) h.set("content-type", obj.httpMetadata.contentType);
+          h.set("etag", obj.httpEtag);
+          return new Response(obj.body, { headers: h });
+        }
+      }
+    }
+
     if (p.startsWith("/eboard-api/")) {
       if (p === "/eboard-api/setup" && req.method === "POST") {
         // 설치 키(Cloudflare 비밀값 SETUP_KEY)는 여기서만 확인합니다.
@@ -75,7 +93,8 @@ export default {
 
     if (p === "/api/health") {
       const cf = (req as Request & { cf?: { colo?: string; country?: string } }).cf;
-      return json({ ok: true, version: SERVER_VERSION, colo: cf?.colo ?? null, country: cf?.country ?? null, setup_key: !!env.SETUP_KEY });
+      return json({ ok: true, version: SERVER_VERSION, edition: env.FILES ? "storage" : "basic",
+        colo: cf?.colo ?? null, country: cf?.country ?? null, setup_key: !!env.SETUP_KEY });
     }
 
     if (p === "/probe-ws") {

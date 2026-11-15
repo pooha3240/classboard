@@ -256,7 +256,7 @@ export class MediaTools {
     const box = $('#md-recent', this.panel);
     try {
       const j = await this._api('/media/recent');
-      if (j.quota) $('#md-usage', this.panel).textContent = `(${Math.round(j.usage / 1e6)}MB / ${Math.round(j.quota / 1e6)}MB, 넘치면 오래된 것부터 지움)`;
+      if (j.quota) { const f = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)}GB` : `${Math.round(n / 1e6)}MB`); $('#md-usage', this.panel).textContent = `(${f(j.usage)} / ${f(j.quota)}, 넘치면 오래된 것부터 지움)`; }
       box.innerHTML = j.files.length ? j.files.map((f) => `
         <button type="button" class="md-file ${f.kind === 'video' ? 'video' : ''}" data-asset="${f.asset}">
           <img src="${f.thumb}" alt="" loading="lazy">

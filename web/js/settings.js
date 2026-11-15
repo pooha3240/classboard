@@ -1,5 +1,5 @@
 // 교시 시각·학급 시간표 설정
-import { api, needLogin, $, esc } from './auth.js';
+import { api, needLogin, $, esc, getToken } from './auth.js';
 
 const qs = new URLSearchParams(location.search);
 let grade = +qs.get('grade') || null, cls = +qs.get('class') || null;
@@ -91,14 +91,105 @@ $('#qf-go').onclick = () => {
 // 지금 판과 최신 판(GitHub 의 package.json)
 async function checkVersion() {
   const el = $('#ver');
-  let cur = '';
-  try { cur = (await (await fetch('/api/health', { cache: 'no-store' })).json()).version; } catch { /* 무시 */ }
+  let cur = '', edition = 'basic';
+  try { const h = await (await fetch('/api/health', { cache: 'no-store' })).json(); cur = h.version; edition = h.edition || 'basic'; } catch { /* 무시 */ }
+  if (edition === 'storage') { $('#store-panel').hidden = false; loadStore(); }
   let latest = '';
   try { latest = (await (await fetch('https://raw.githubusercontent.com/pooha3240/classboard/main/package.json', { cache: 'no-store' })).json()).version; } catch { /* 무시 */ }
   const newer = (a, b) => { const x = a.split('.').map(Number), y = b.split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
-  el.innerHTML = `지금 판: <b>${esc(cur || '?')}</b>` + (latest ? ` · 최신 판: <b>${esc(latest)}</b> ${newer(latest, cur) ? '<span class="tag-new">업데이트 있음</span>' : '(최신)'}` : ' · 최신 판을 확인하지 못했습니다');
+  el.innerHTML = `${edition === 'storage' ? '저장판' : '기본판'} · 지금 판: <b>${esc(cur || '?')}</b>` + (latest ? ` · 최신 판: <b>${esc(latest)}</b> ${newer(latest, cur) ? '<span class="tag-new">업데이트 있음</span>' : '(최신)'}` : ' · 최신 판을 확인하지 못했습니다');
 }
 checkVersion();
+
+// ── 저장판: 저장 공간·백업·되살리기 ──
+const mb = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)}GB` : `${Math.round(n / 1e6)}MB`);
+async function loadStore() {
+  try {
+    const j = await api('/history/sessions?start=9999-01-01');
+    const s = j.storage, r2 = s.r2;
+    $('#store-usage').innerHTML = `칠판 저장소 ${mb(s.db)} / ${mb(s.budget)}` + (r2 ? ` · R2 ${mb(r2.media + r2.archive)} / ${mb(r2.cap)}
+      <span class="muted">(자료 ${mb(r2.media)}, 보관한 판서 기록 ${mb(r2.archive)})</span>` : '') +
+      '<br><span class="muted">R2 는 무료 10GB 를 넘지 않도록 8GB 에서 막습니다. 60일이 지난 판서 기록은 재생 기록까지 R2 로 옮겨 보관합니다.</span>';
+  } catch (e) { $('#store-usage').textContent = e.message; }
+}
+
+$('#bk-go').onclick = async () => {
+  const b = $('#bk-go'), st = $('#bk-st'); b.disabled = true;
+  try {
+    const token = await getToken();
+    const media = $('#bk-media').checked ? 1 : 0;
+    const parts = [];
+    let cursor = null, n = 0, size = 0;
+    do {
+      const r = await fetch(`/eboard-api/backup/part?media=${media}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, { headers: { Authorization: 'Bearer ' + token } });
+      const j = await r.json();
+      if (!r.ok) throw new Error((j.detail && j.detail.message) || `백업 실패 (${r.status})`);
+      for (const ln of j.lines) { const t = JSON.stringify(ln) + '\n'; parts.push(t); size += t.length; n++; }
+      st.textContent = `받는 중… ${n}줄 · ${mb(size)}`;
+      cursor = j.next;
+    } while (cursor);
+    st.textContent = '압축하는 중…';
+    const gz = await new Response(new Blob(parts).stream().pipeThrough(new CompressionStream('gzip'))).blob();
+    const day = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' }).replaceAll('-', '');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(gz); a.download = `classboard-backup-${day}.ndjson.gz`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    st.textContent = `내려받았습니다 (${mb(gz.size)}).`;
+  } catch (e) { st.textContent = e.message; } finally { b.disabled = false; }
+};
+
+$('#rs-go').onclick = async () => {
+  const f = $('#rs-file').files[0], st = $('#rs-st'), pw = $('#rs-pw').value;
+  if (!f) { toast('백업 파일을 고르세요'); return; }
+  if (!pw) { toast('교사 비밀번호를 넣으세요'); return; }
+  if (!confirm('지금 칠판의 판서 기록·진도표·자료가 모두 지워지고 백업 내용으로 바뀝니다. 계속할까요?')) return;
+  const b = $('#rs-go'); b.disabled = true;
+  try {
+    const token = await getToken();
+    const post = async (path, body) => {
+      const r = await fetch('/eboard-api/backup/restore/' + path, { method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error((j.detail && j.detail.message) || `되살리기 실패 (${r.status})`);
+      return j;
+    };
+    let stream = f.stream();
+    const head = new Uint8Array(await f.slice(0, 2).arrayBuffer());
+    if (head[0] === 0x1f && head[1] === 0x8b) stream = stream.pipeThrough(new DecompressionStream('gzip'));
+    const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
+    let buf = '', batch = [], batchSize = 0, started = false, total = 0, blobs = 0;
+    const flush = async () => {
+      if (!batch.length) return;
+      const r = await post('rows', { lines: batch });
+      total += r.rows; blobs += r.blobs; batch = []; batchSize = 0;
+      st.textContent = `되살리는 중… ${total}줄${blobs ? ` · 자료 ${blobs}장` : ''}`;
+    };
+    const take = async (line) => {
+      if (!line.trim()) return;
+      const o = JSON.parse(line);
+      if (!started) {
+        if (o.t !== 'meta') throw new Error('classboard 백업 파일이 아닙니다');
+        await post('begin', { password: pw, meta: o });
+        started = true; return;
+      }
+      batch.push(o); batchSize += line.length;
+      if (batchSize > 3_000_000 || batch.length >= 3000) await flush();
+    };
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += value;
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) { await take(buf.slice(0, i)); buf = buf.slice(i + 1); }
+    }
+    await take(buf); await flush();
+    if (!started) throw new Error('빈 파일입니다');
+    await post('end', {});
+    st.textContent = `되살렸습니다 (${total}줄${blobs ? `, 자료 ${blobs}장` : ''}). 칠판을 새로 고치세요.`;
+    $('#rs-pw').value = '';
+    loadBells(); loadTimetable(); loadStore();
+  } catch (e) { st.textContent = e.message; } finally { b.disabled = false; }
+};
 
 // ── 나이스 시간표 자동 받기(선택) ──
 let neisPick = null;

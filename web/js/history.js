@@ -46,7 +46,10 @@ async function loadList() {
   }
   if (j.storage) {
     const mb = (n) => Math.round(n / 1e6);
-    $('#storage').textContent = `저장 공간 ${mb(j.storage.db)}MB / ${mb(j.storage.budget)}MB (자료 ${mb(j.storage.media)}MB 포함) · 판서 재생은 ${60}일까지, 그 뒤에는 완성된 판서만 남습니다`;
+    const r2 = j.storage.r2;
+    $('#storage').textContent = r2
+      ? `칠판 저장소 ${mb(j.storage.db)}MB / ${mb(j.storage.budget)}MB · R2 ${mb(r2.media + r2.archive)}MB / ${mb(r2.cap)}MB (보관한 판서 기록 ${mb(r2.archive)}MB) · 60일이 지난 기록은 재생 기록까지 R2 에 보관합니다`
+      : `저장 공간 ${mb(j.storage.db)}MB / ${mb(j.storage.budget)}MB (자료 ${mb(j.storage.media)}MB 포함) · 판서 재생은 60일까지, 그 뒤에는 완성된 판서만 남습니다`;
   }
   if (!j.sessions.length) { list.innerHTML = '<p class="muted empty">이 달에는 판서 기록이 없습니다.</p>'; return; }
   const byDate = new Map();

@@ -13,7 +13,6 @@ type Json = Record<string, unknown>;
 
 export const MAX_MEDIA = 12;                 // 한 차시에 붙일 수 있는 자료 수
 export const MAX_PAGES = 60;                 // 한 자료(PDF)의 쪽 수
-export const PINNED_QUOTA = 300 * 1000 * 1000;   // 차시에 붙인 사진·PDF(자동 정리 안 함)
 const SHORT: Record<string, string> = { "자율·자치활동": "자율", "자율활동": "자율", "동아리활동": "동아리", "진로활동": "진로", "봉사활동": "봉사" };
 const ABBR: Record<string, string> = { 국: "국어", 사: "사회", 도: "도덕", 수: "수학", 과: "과학", 실: "실과", 체: "체육", 음: "음악",
   미: "미술", 영: "영어", 자: "자율·자치활동", 동: "동아리활동", 진: "진로활동", 봉: "봉사활동" };
@@ -559,8 +558,10 @@ export class PlanStore {
       const assets = ids.map((id) => this.media.get(id));
       if (!ids.length || assets.some((a) => !a || !a.done)) throw new PlanError(400, "bad_asset", "자료를 확인하세요");
       const set = assets[0]!.set_id;
-      if (!this.pinnedSets().has(set) && this.pinnedBytes(set) > PINNED_QUOTA) {
-        throw new PlanError(507, "pinned_full", `차시 자료 공간(${Math.round(PINNED_QUOTA / 1e6)}MB)이 찼습니다. 지난 차시의 자료를 빼거나 유튜브·웹 주소로 붙이세요`);
+      const cap = this.media.pinnedQuota();
+      if (!this.pinnedSets().has(set) && this.pinnedBytes(set) > cap) {
+        const size = cap >= 1e9 ? `${Math.round(cap / 1e9)}GB` : `${Math.round(cap / 1e6)}MB`;
+        throw new PlanError(507, "pinned_full", `차시 자료 공간(${size})이 찼습니다. 지난 차시의 자료를 빼거나 유튜브·웹 주소로 붙이세요`);
       }
       data = { assets: ids };
     } else if (kind === "yt") {

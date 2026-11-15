@@ -1,0 +1,32 @@
+// classboard 저장판 설정: 기본판(wrangler.jsonc)과 같고 R2 저장소(FILES)만 더함.
+// 배포: npx wrangler deploy -c wrangler.storage.jsonc  (버킷은 처음 배포 때 자동으로 만들어짐. 계정에서 R2 를 먼저 켜야 함)
+// 기본판에서 바꿔도 Worker 이름이 같아 판서·설정은 그대로입니다.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "classboard",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "./web",
+    "binding": "ASSETS"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "ROOM", "class_name": "ClassRoom" },
+      { "name": "PROBE", "class_name": "ProbeRoom" }
+    ]
+  },
+  "r2_buckets": [
+    { "binding": "FILES" }
+  ],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ClassRoom"] },
+    { "tag": "v2", "new_sqlite_classes": ["ProbeRoom"] }
+  ],
+  // workers.dev 주소는 쓰고, 브랜치별 미리보기 주소는 만들지 않음
+  // 대시보드에서 넣은 변수를 배포할 때 지우지 않음(SETUP_KEY 를 일반 변수로 넣은 경우 대비)
+  "keep_vars": true,
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": { "enabled": true }
+}
