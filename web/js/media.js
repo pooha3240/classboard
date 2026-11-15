@@ -1,6 +1,7 @@
 // 배경 자료: 사진·PDF 올리기, 최근 자료, 웹캠(이 기기 카메라) 캡처, 끌어다 놓기·붙여넣기
 // 올린 파일은 서버가 webp 로 바꿔 보관합니다. 페이지 배경은 page:bg / page:import 로 모든 교사 기기에 함께 바뀝니다.
 import { isImageBg, BOARD_WHITE, BOARD_GREEN, pageColor } from './shapes.js';
+import { sha256Hex, convertImage, openPdf } from './convert.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -8,7 +9,7 @@ const ls = {
   get(k, d) { try { const v = localStorage.getItem('eboard.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem('eboard.' + k, JSON.stringify(v)); } catch { /* 무시 */ } },
 };
-const ACCEPT = 'image/*,.heic,.heif,.pdf,application/pdf,video/mp4,video/webm,video/quicktime,.mp4,.m4v,.mov,.webm';
+const ACCEPT = 'image/*,.heic,.heif,.pdf,application/pdf';   // 기본판: 동영상 파일은 받지 않음(유튜브 주소로)
 const KIND_LABEL = { pdf: 'PDF', image: '사진', capture: '웹캠', video: '동영상' };
 const MB = 1024 * 1024;
 const isVideoFile = (f) => /^video\//.test(f.type || '') || /\.(mp4|m4v|mov|webm)$/i.test(f.name || '');
@@ -63,7 +64,7 @@ export class MediaTools {
           <button type="button" class="bc dark" data-bc="${BOARD_GREEN}" style="--c:${BOARD_GREEN}">칠판</button>
           <button type="button" class="bc pal" data-bc="pick" title="다른 색·스포이드">🎨 다른 색</button>
         </div>
-        <button type="button" class="ct-big" id="md-open">사진·PDF·동영상 불러오기</button>
+        <button type="button" class="ct-big" id="md-open">사진·PDF 불러오기</button>
         <input type="file" id="md-file" accept="${ACCEPT}" hidden>
         <p class="muted small" id="md-hint">교사 PC 에서는 파일을 칠판에 끌어다 놓거나, 복사한 그림을 붙여넣기(Ctrl+V)해도 됩니다.</p>
         <div class="md-progress" id="md-progress" hidden><i></i><span></span></div>
@@ -83,7 +84,7 @@ export class MediaTools {
           <button type="button" class="md-wide" id="md-grab">한 장만 가져오기</button>
         </div>
         <p class="muted small">칠판 안에 띄울 수 없는 사이트(아이스크림처럼 로그인이 필요한 사이트, 빈 화면·거부 표시)는 크롬의 다른 탭에 열어 두고 고르세요. 실시간으로 띄우면 그 탭 화면이 움직이는 그대로 깔리고 그 위에 판서합니다.</p>
-        <h4>최근 자료 <button type="button" class="link small" id="md-reload">새로 고침</button></h4>
+        <h4>최근 자료 <span class="muted small" id="md-usage"></span> <button type="button" class="link small" id="md-reload">새로 고침</button></h4>
         <div class="md-recent" id="md-recent"><p class="muted small">불러오는 중…</p></div>
       </div>`;
     document.body.appendChild(el);
@@ -135,7 +136,7 @@ export class MediaTools {
   async loadLesson() {
     const box = $('#md-lesson', this.panel), k = this.getClass && this.getClass();
     box.hidden = true;
-    if (!k) return;
+    if (!k || !this.planEnabled) return;              // 기본판: 주간 진도·차시 자료 없음
     try {
       const j = await this._api(`/plan/now?grade=${k.grade}&class=${k.class}`);
       this.lessonItems = j.items || [];
@@ -189,6 +190,7 @@ export class MediaTools {
     const box = $('#md-recent', this.panel);
     try {
       const j = await this._api('/media/recent');
+      if (j.quota) $('#md-usage', this.panel).textContent = `(${Math.round(j.usage / 1e6)}MB / ${Math.round(j.quota / 1e6)}MB, 넘치면 오래된 것부터 지움)`;
       box.innerHTML = j.files.length ? j.files.map((f) => `
         <button type="button" class="md-file ${f.kind === 'video' ? 'video' : ''}" data-asset="${f.asset}">
           <img src="${f.thumb}" alt="" loading="lazy">
@@ -213,7 +215,7 @@ export class MediaTools {
 
   async upload(file, kind = 'file') {
     if (this.busy) { this.toast('앞의 파일을 올리는 중입니다'); return null; }
-    // 문서 파일은 서버에서 바꾸지 않습니다: 선생님 PC 에서 PDF 로 저장해 올리도록 안내
+    // 문서 파일은 바꾸지 않습니다: 선생님 PC 에서 PDF 로 저장해 올리도록 안내
     const ext = (String(file.name || '').match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase();
     const HOW = {
       ppt: 'PowerPoint: 파일 → 내보내기 → PDF/XPS 만들기', pptx: 'PowerPoint: 파일 → 내보내기 → PDF/XPS 만들기',
@@ -223,50 +225,66 @@ export class MediaTools {
       key: 'Keynote: 파일 → 보내기 → PDF', odp: '파일 → PDF로 내보내기', odt: '파일 → PDF로 내보내기',
     };
     if (HOW[ext]) { this.toast(`${ext.toUpperCase()} 파일은 PDF로 저장해서 올려 주세요 (${HOW[ext]})`, 6000); return null; }
-    const video = kind === 'file' && isVideoFile(file);
-    if (video && file.size > 95 * MB) { this.toast('동영상이 너무 큽니다 (최대 95MB). 긴 영상은 유튜브(일부 공개)에 올려 주소로 띄우세요', 6000); return null; }
-    if (!video && file.size > 60 * MB) { this.toast('파일이 너무 큽니다 (최대 60MB)'); return null; }
-    let probe = null;
-    if (video) {
-      probe = await probeVideo(file);
-      if (!probe) { this.toast('이 기기에서 재생할 수 없는 동영상입니다. MP4(H.264)로 저장해서 올려 주세요', 6000); return null; }
-    }
+    if (isVideoFile(file)) { this.toast('기본판에서는 동영상 파일을 올릴 수 없습니다. 유튜브(일부 공개)에 올려 주소로 띄워 주세요', 6000); return null; }
+    if (file.size > 100 * MB) { this.toast('파일이 너무 큽니다 (최대 100MB)'); return null; }
+    const isPdf = file.type === 'application/pdf' || ext === 'pdf';
+    const akind = isPdf ? 'pdf' : (kind === 'capture' ? 'capture' : 'image');
+    const name = file.name || '';
+    const label = kind === 'capture' ? '캡처' : (name || '그림');
     this.busy = true;
-    const label = kind === 'capture' ? '캡처' : (file.name || '그림');
     if (kind !== 'capture') this.panel.hidden = false;
-    this._progress(0, `${label} 올리는 중…`);
+    this._progress(0, `${label} 여는 중…`);
+    let pdf = null;
     try {
+      const buf = await file.arrayBuffer();
+      let sha = '';
+      if (akind !== 'capture') {                       // 같은 파일을 전에 올렸으면 그대로 다시 씀
+        sha = await sha256Hex(buf);
+        const f = await this._api(`/media/find?sha=${sha}&kind=${akind}`).catch(() => null);
+        if (f && f.items) { this._progress(100, '전에 올린 자료를 다시 씁니다'); setTimeout(() => this._progress(null), 800); return f; }
+      }
+      let n = 1, getPage;
+      if (isPdf) {
+        pdf = await openPdf(buf);
+        n = pdf.pages;
+        if (n < 1) throw new Error('빈 PDF 입니다');
+        if (n > 60) throw new Error(`PDF 가 ${n}쪽입니다. 60쪽 이하로 나눠 올려 주세요`);
+        getPage = (i) => pdf.page(i);
+      } else {
+        getPage = () => convertImage(file);
+      }
       const token = await this._token();
-      const res = await new Promise((resolve, reject) => {
-        const x = new XMLHttpRequest();
-        x.open('POST', `/eboard-api/media?kind=${kind}&name=${encodeURIComponent(file.name || '')}${probe ? `&w=${probe.w}&h=${probe.h}` : ''}`);
-        x.setRequestHeader('Authorization', 'Bearer ' + token);
-        x.upload.onprogress = (e) => {
-          if (!e.lengthComputable) return;
-          const p = Math.round((e.loaded / e.total) * 100);
-          this._progress(p * 0.7, p < 100 ? `${label} 올리는 중… ${p}%` : (video ? '저장하는 중…' : '바꾸는 중… (PDF 는 쪽 수에 따라 조금 걸립니다)'));
-        };
-        x.onload = () => {
-          let j = {}; try { j = JSON.parse(x.responseText); } catch { /* 무시 */ }
-          if (x.status >= 200 && x.status < 300) resolve(j);
-          else reject(new Error((j.detail && j.detail.message) || (x.status === 413 ? '파일이 너무 큽니다' : `올리지 못했습니다 (${x.status})`)));
-        };
-        x.onerror = () => reject(new Error('네트워크 오류로 올리지 못했습니다'));
-        x.timeout = video ? 900000 : 180000; x.ontimeout = () => reject(new Error('시간이 너무 오래 걸립니다'));
-        x.send(file);
-      });
-      if (video && probe.thumb && !res.reused) {                  // 미리보기 그림은 이 기기가 찍어서
-        const r = await fetch(`/eboard-api/media/${res.items[0].asset}/thumb`, { method: 'POST', headers: { Authorization: 'Bearer ' + token }, body: probe.thumb }).catch(() => null);
-        if (r && r.ok) res.items[0].thumb = (await r.json()).thumb;
+      const items = [];
+      let set = 0;
+      for (let i = 0; i < n; i++) {
+        this._progress((i / n) * 100, n > 1 ? `${label} 바꿔서 올리는 중… ${i + 1}/${n}쪽` : `${label} 올리는 중…`);
+        const pg = await getPage(i);
+        const q = new URLSearchParams({ set: String(set), i: String(i), n: String(n), kind: akind, name, sha, w: String(pg.w), h: String(pg.h) });
+        let r, j = {};
+        for (let attempt = 0; attempt < 3; attempt++) {           // 학교망이 잠깐 끊겨도 한 쪽만 다시
+          r = await fetch(`/eboard-api/media/upload?${q}`, {
+            method: 'POST', headers: { Authorization: 'Bearer ' + token, 'x-thumb-len': String(pg.thumb.size) },
+            body: new Blob([pg.thumb, pg.blob]),
+          }).catch(() => null);
+          if (r) { j = await r.json().catch(() => ({})); if (r.ok || r.status < 500) break; }
+          await new Promise((res) => setTimeout(res, 800 * (attempt + 1)));
+        }
+        if (!r) throw new Error('네트워크 오류로 올리지 못했습니다');
+        if (!r.ok) throw new Error((j.detail && j.detail.message) || `올리지 못했습니다 (${r.status})`);
+        set = j.set;
+        items.push(j.item);
       }
       this._progress(100, '완료');
       setTimeout(() => this._progress(null), 800);
-      return res;
+      return { kind: akind, name, items };
     } catch (e) {
       this._progress(null);
-      this.toast(e.message, 4000);
+      this.toast(e.message || '올리지 못했습니다', 5000);
       return null;
-    } finally { this.busy = false; }
+    } finally {
+      if (pdf) pdf.close();
+      this.busy = false;
+    }
   }
 
   async uploadAndPick(file) {

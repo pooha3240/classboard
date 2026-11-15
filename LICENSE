@@ -131,3 +131,9 @@ software under these terms.
 of your licenses.
 
 Required Notice: Copyright (c) 2026 pooha3240 (https://github.com/pooha3240/classboard)
+
+
+Third-party components
+- web/vendor/pdfjs: PDF.js (Mozilla), Apache License 2.0 — see web/vendor/pdfjs/LICENSE
+- web/vendor/qrcode.mjs: qrcode-generator (Kazuhiko Arase), MIT
+- web/vendor/perfect-freehand: perfect-freehand (Steve Ruiz), MIT

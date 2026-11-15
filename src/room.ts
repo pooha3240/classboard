@@ -13,6 +13,7 @@
  *   "ping" → "pong" 은 자동 응답(DO를 깨우지 않음)
  */
 import { DurableObject } from "cloudflare:workers";
+import { MediaStore, MediaError, MAX_PDF_PAGES, imageMeta, pageSizeFor } from "./media";
 import { sign, verify, TokenError, randomKey, hashPassword, checkPassword, sha256, type TokenPayload } from "./lib/token";
 import { currentPeriod, kstNow, nextBoundary, periodLabel, type Bell } from "./lib/periods";
 import {
@@ -20,7 +21,7 @@ import {
   validateObj, cleanWebUrl, cleanColor, num, type Obj,
 } from "./lib/validate";
 
-export const SERVER_VERSION = "0.3.1";
+export const SERVER_VERSION = "0.4.0";
 
 const TEACHER_DEVICES = new Set(["display", "teacher-pc", "teacher-tablet"]);
 const TOKEN_DAYS = 30;
@@ -88,7 +89,8 @@ class PageState {
 
   meta(): Json {
     return { id: this.id, page_no: this.page_no, w: this.w, h: this.h, bg_type: this.bg_type,
-      bg_meta: this.bg_meta, bg_url: null, bg_color: this.bg_color, play: null };
+      bg_meta: this.bg_meta, bg_url: (this.bg_type === "image" || this.bg_type === "pdf") ? (this.bg_meta.url as string) ?? null : null,
+      bg_color: this.bg_color, play: null };
   }
   toClient(): Json { return { ...this.meta(), seq: this.seq, objs: [...this.objs.values()] }; }
 }
@@ -102,6 +104,7 @@ const fail = (status: number, error: string, message: string) => json({ detail: 
 
 export class ClassRoom extends DurableObject<Record<string, unknown>> {
   private sql: SqlStorage;
+  private media: MediaStore;
   private pages = new Map<number, PageState>();
   private loginFails = { n: 0, until: 0 };
   private pinFails = new Map<number, { n: number; until: number }>();
@@ -109,6 +112,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
   constructor(ctx: DurableObjectState, env: Record<string, unknown>) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
+    this.media = new MediaStore(this.sql);
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
     ctx.blockConcurrencyWhile(async () => this.migrate());
   }
@@ -142,6 +146,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
         id INTEGER PRIMARY KEY AUTOINCREMENT, num INTEGER NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL,
         expires INTEGER NOT NULL, done INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
     `);
+    this.media.migrate();
   }
 
   private cfg(k: string): string | null {
@@ -326,6 +331,9 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       return json({ ...t, role: "student", num: n, grade: k.grade, class: k.class });
     }
 
+    const file = /^\/files\/(\d+)$/.exec(path);
+    if (file && method === "GET") return this.media.serve(Number(file[1]), url.searchParams.get("k"), url.searchParams.get("t") === "1");
+
     if (path === "/auth/device/token" && method === "POST") {
       if (!this.configured()) return fail(409, "not_configured", "아직 설치 설정을 하지 않았습니다");
       const key = String((await body()).key ?? "");
@@ -456,6 +464,43 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       if (!elev) return needPin();
       this.sql.exec("DELETE FROM arrangements WHERE id = ?", Number(del[1]));
       return json({ ok: true });
+    }
+    /* 자료(사진·PDF): 변환은 올리는 기기에서, 서버는 보관만 */
+    if (path === "/media/recent" && method === "GET") return json(this.media.recent());
+    if (path === "/media/find" && method === "GET") {
+      const sha = url.searchParams.get("sha") ?? "", kind = url.searchParams.get("kind") ?? "";
+      return json(/^[0-9a-f]{64}$/.test(sha) ? (this.media.find(sha, kind) ?? { found: false }) : { found: false });
+    }
+    if (path === "/media/upload" && method === "POST") {
+      const n = (k: string) => Number(url.searchParams.get(k) ?? NaN);
+      const len = Number(req.headers.get("content-length") ?? 0);
+      if (len > 9 * 1024 * 1024) return fail(413, "too_large", "그림이 너무 큽니다");
+      const bodyBytes = new Uint8Array(await req.arrayBuffer());
+      try {
+        return json(this.media.put({
+          set: n("set") || 0, i: n("i"), n: n("n"), kind: url.searchParams.get("kind") ?? "", name: url.searchParams.get("name") ?? "",
+          sha: url.searchParams.get("sha") ?? "", w: n("w"), h: n("h"), thumbLen: Number(req.headers.get("x-thumb-len") ?? 0),
+        }, bodyBytes));
+      } catch (e) {
+        if (e instanceof MediaError) return fail(e.status, e.code, e.message);
+        throw e;
+      }
+    }
+    const mset = /^\/media\/(\d+)\/set$/.exec(path);
+    if (mset && method === "GET") {
+      const a = this.media.get(Number(mset[1]));
+      if (!a || !a.done) return fail(404, "not_found", "자료가 없습니다");
+      this.media.touch([a.set_id]);
+      return json({ kind: a.kind, name: a.name ?? "", items: this.media.setOf(a.set_id).map((x) => ({ asset: x.id, w: x.w, h: x.h, page: x.page_index,
+        url: `/eboard-api/files/${x.id}?k=${x.key}`, thumb: `/eboard-api/files/${x.id}?k=${x.key}${x.thumb_mime ? "&t=1" : ""}` })) });
+    }
+    const mdel = /^\/media\/(\d+)$/.exec(path);
+    if (mdel && method === "DELETE") {
+      if (!elev) return needPin();
+      const a = this.media.get(Number(mdel[1]));
+      if (!a) return fail(404, "not_found", "자료가 없습니다");
+      this.media.deleteSet(a.set_id);
+      return json({ ok: true, usage: this.media.usage() });
     }
     if (/^\/pages\/\d+\/snapshot$/.test(path) && method === "PUT") {
       return json({ ok: true, stored: false });          // 판서 기록(썸네일·PDF)은 다음 단계에서
@@ -679,6 +724,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
 
   async alarm(): Promise<void> {
     this.flushPages();
+    if (Math.random() < 0.05) this.media.sweep();       // 올리다 끊긴 자료 정리(가끔만)
     this.expireGrants();
     if (this.joinedSockets().length) {
       const prevRoom = this.room();
@@ -903,6 +949,28 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
         return { ok: true };
       }
 
+      case "page:import": {
+        // 올린 자료 여러 장(PDF 쪽 등)을 새 페이지들로 붙이고 첫 장으로 이동
+        this.requireTeacherInRoom(a);
+        const ids = d.assets;
+        if (!Array.isArray(ids) || ids.length < 1 || ids.length > MAX_PDF_PAGES) return { ok: false, error: "bad_request" };
+        const assets = ids.map((x) => this.media.get(Number(x)));
+        if (assets.some((x) => !x || !x.done)) return { ok: false, error: "bad_asset" };
+        const r = this.currentRoom();
+        let first = 0;
+        for (const x of assets) {
+          const [w, h] = pageSizeFor(x!.w, x!.h);
+          const id = this.createPage(r.session);
+          this.sql.exec("UPDATE pages SET w = ?, h = ?, bg_type = ?, bg_meta = ? WHERE id = ?",
+            w, h, x!.kind === "pdf" ? "pdf" : "image", JSON.stringify(imageMeta(x!)), id);
+          first = first || id;
+        }
+        this.media.touch(assets.map((x) => x!.set_id));
+        this.setRoom({ ...r, page: first });
+        this.emit("page:current", this.payload());
+        return { ok: true, page_id: first };
+      }
+
       case "page:goto": {
         this.requireTeacherInRoom(a);
         const ps = this.sessionPage(d.page_id);
@@ -931,15 +999,22 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       case "page:bg": {
         this.requireTeacherInRoom(a);
         const ps = this.sessionPage(d.page_id);
-        const bg = String(d.bg_type);
+        let bg = String(d.bg_type);
         const metaIn = (d.bg_meta ?? {}) as Json;
         let meta: Json;
         if (BG_TYPES.has(bg)) meta = { size: Math.round(num(metaIn.size ?? 80, 20, 400)) };
         else if (bg === "web") meta = { url: cleanWebUrl(metaIn.url) };
-        else return { ok: false, error: "not_available" };     // 사진·PDF·동영상 배경은 다음 단계
+        else if (bg === "image" || bg === "pdf") {
+          const asset = this.media.get(Number(metaIn.asset));
+          if (!asset || !asset.done) return { ok: false, error: "bad_asset" };
+          meta = imageMeta(asset);
+          bg = asset.kind === "pdf" ? "pdf" : "image";
+          this.media.touch([asset.set_id]);
+        }
+        else return { ok: false, error: "not_available" };     // 동영상 파일 배경은 저장판에서
         ps.bg_type = bg; ps.bg_meta = meta;
         this.sql.exec("UPDATE pages SET bg_type = ?, bg_meta = ?, updated_at = ? WHERE id = ?", bg, JSON.stringify(meta), Date.now(), ps.id);
-        this.emit("page:bg", { page_id: ps.id, bg_type: bg, bg_meta: meta, bg_url: null, play: null });
+        this.emit("page:bg", { page_id: ps.id, bg_type: bg, bg_meta: meta, bg_url: ps.meta().bg_url, play: null });
         return { ok: true };
       }
 
