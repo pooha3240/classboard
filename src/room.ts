@@ -24,7 +24,7 @@ import {
   validateObj, cleanWebUrl, cleanColor, num, type Obj,
 } from "./lib/validate";
 
-export const SERVER_VERSION = "0.10.0";
+export const SERVER_VERSION = "0.10.1";
 
 const TEACHER_DEVICES = new Set(["display", "teacher-pc", "teacher-tablet"]);
 const TOKEN_DAYS = 30;

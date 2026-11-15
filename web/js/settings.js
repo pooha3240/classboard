@@ -102,7 +102,7 @@ async function checkVersion() {
 checkVersion();
 
 // ── 저장판: 저장 공간·백업·되살리기 ──
-const mb = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)}GB` : `${Math.round(n / 1e6)}MB`);
+const mb = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)}GB` : n >= 1e6 ? `${Math.round(n / 1e6)}MB` : `${Math.max(1, Math.round(n / 1e3))}KB`);
 async function loadStore() {
   try {
     const j = await api('/history/sessions?start=9999-01-01');
@@ -113,30 +113,53 @@ async function loadStore() {
   } catch (e) { $('#store-usage').textContent = e.message; }
 }
 
+// 백업: 크롬·엣지는 저장 위치를 먼저 고르고 받는 대로 바로 파일에 씀(크기 제한 없음).
+// 그 밖의 브라우저는 메모리에 모았다가 한 번에 저장(자료를 넣은 큰 백업은 실패할 수 있음).
 $('#bk-go').onclick = async () => {
-  const b = $('#bk-go'), st = $('#bk-st'); b.disabled = true;
+  const b = $('#bk-go'), st = $('#bk-st');
+  const media = $('#bk-media').checked ? 1 : 0;
+  const day = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' }).replaceAll('-', '');
+  const name = `classboard-backup-${day}.ndjson.gz`;
+  let sink = null;                                    // { write(text), close() }
+  if ('showSaveFilePicker' in window) {
+    let handle;
+    try {
+      handle = await window.showSaveFilePicker({ suggestedName: name, types: [{ description: 'classboard 백업', accept: { 'application/gzip': ['.gz'] } }] });
+    } catch (e) { if (e && e.name === 'AbortError') return; handle = null; }
+    if (handle) {
+      const file = await handle.createWritable();
+      const ts = new TransformStream();
+      const done = ts.readable.pipeThrough(new TextEncoderStream()).pipeThrough(new CompressionStream('gzip')).pipeTo(file);
+      const w = ts.writable.getWriter();
+      sink = { write: (t) => w.write(t), close: async () => { await w.close(); await done; }, abort: async () => { try { await w.abort(); } catch { /* 무시 */ } } };
+    }
+  }
+  if (!sink && media && !confirm('이 브라우저는 큰 백업을 바로 파일에 쓰지 못해 메모리에 모았다가 저장합니다. 자료가 많으면 실패할 수 있습니다(크롬·엣지 권장). 계속할까요?')) return;
+  const parts = [];
+  if (!sink) sink = { write: (t) => { parts.push(t); }, close: async () => {
+    const gz = await new Response(new Blob(parts).stream().pipeThrough(new CompressionStream('gzip'))).blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(gz); a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  }, abort: async () => {} };
+  b.disabled = true;
+  let size = 0;
   try {
     const token = await getToken();
-    const media = $('#bk-media').checked ? 1 : 0;
-    const parts = [];
-    let cursor = null, n = 0, size = 0;
+    let cursor = null, n = 0;
     do {
       const r = await fetch(`/eboard-api/backup/part?media=${media}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, { headers: { Authorization: 'Bearer ' + token } });
       const j = await r.json();
       if (!r.ok) throw new Error((j.detail && j.detail.message) || `백업 실패 (${r.status})`);
-      for (const ln of j.lines) { const t = JSON.stringify(ln) + '\n'; parts.push(t); size += t.length; n++; }
+      for (const ln of j.lines) { const t = JSON.stringify(ln) + '\n'; await sink.write(t); size += t.length; n++; }
       st.textContent = `받는 중… ${n}줄 · ${mb(size)}`;
       cursor = j.next;
     } while (cursor);
-    st.textContent = '압축하는 중…';
-    const gz = await new Response(new Blob(parts).stream().pipeThrough(new CompressionStream('gzip'))).blob();
-    const day = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' }).replaceAll('-', '');
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(gz); a.download = `classboard-backup-${day}.ndjson.gz`;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
-    st.textContent = `내려받았습니다 (${mb(gz.size)}).`;
-  } catch (e) { st.textContent = e.message; } finally { b.disabled = false; }
+    st.textContent = '마무리하는 중…';
+    await sink.close();
+    st.textContent = `백업을 저장했습니다 (압축 전 ${mb(size)}).`;
+  } catch (e) { await sink.abort(); st.textContent = e.message; } finally { b.disabled = false; }
 };
 
 $('#rs-go').onclick = async () => {
