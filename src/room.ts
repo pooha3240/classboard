@@ -106,6 +106,20 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       });
     }
 
+    if (url.pathname === "/where") {
+      // DO 안에서 바깥으로 요청을 보내면, 그 요청이 나가는 데이터센터가 곧 DO가 도는 곳입니다.
+      let colo: string | null = null;
+      try {
+        const trace = await (await fetch("https://www.cloudflare.com/cdn-cgi/trace")).text();
+        colo = /^colo=(\w+)$/m.exec(trace)?.[1] ?? null;
+      } catch {
+        /* 진단 실패는 null 로 보고 */
+      }
+      return new Response(JSON.stringify({ colo }), {
+        headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+      });
+    }
+
     if (req.headers.get("Upgrade") !== "websocket") {
       return new Response("websocket only", { status: 426 });
     }

@@ -52,6 +52,12 @@
           <option value="student">학생 기기</option>
         </select>
       </label>
+      <label>학급 방
+        <select id="room">
+          <option value="default">기본 배치</option>
+          <option value="apac">아시아 배치</option>
+        </select>
+      </label>
       <button class="primary" id="btn-connect">연결</button>
       <button id="btn-disconnect" disabled>끊기</button>
       <span class="pill off" id="status">연결 안 됨</span>
@@ -71,6 +77,21 @@
       <div class="stat"><b id="rtt-med">–</b><span>중앙값 (ms)</span></div>
       <div class="stat"><b id="rtt-max">–</b><span>최대 (ms)</span></div>
     </div>
+  </section>
+
+  <section>
+    <h2>2-1. 위치 진단 (지연이 어디서 생기는지)</h2>
+    <p class="hint">기기 → Cloudflare 접점 → 학급 DO 구간을 나눠서 잽니다. 학급 DO를 미국 자동 배치(기본)와 아시아 배치(apac)로 하나씩 두고 비교합니다.</p>
+    <div class="row"><button id="btn-diag">진단 시작</button><span class="hint" id="diag-status"></span></div>
+    <table id="diag" style="margin-top:10px;border-collapse:collapse;width:100%;font-size:14px">
+      <thead><tr style="text-align:left;border-bottom:1px solid var(--line)"><th style="padding:6px">구간</th><th>데이터센터</th><th>왕복 중앙값 (ms)</th><th>최대 (ms)</th></tr></thead>
+      <tbody>
+        <tr><td style="padding:6px">기기 ↔ Cloudflare 접점 (HTTP)</td><td id="d-edge-colo">–</td><td id="d-edge-med">–</td><td id="d-edge-max">–</td></tr>
+        <tr><td style="padding:6px">기기 ↔ 학급 DO, 기본 배치 (WebSocket)</td><td id="d-def-colo">–</td><td id="d-def-med">–</td><td id="d-def-max">–</td></tr>
+        <tr><td style="padding:6px">기기 ↔ 학급 DO, 아시아 배치 (WebSocket)</td><td id="d-apac-colo">–</td><td id="d-apac-med">–</td><td id="d-apac-max">–</td></tr>
+      </tbody>
+    </table>
+    <p class="hint" id="diag-note"></p>
   </section>
 
   <section>
@@ -113,7 +134,7 @@
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
-  const wsUrl = (role) => `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?role=${role}`;
+  const wsUrl = (role, room) => `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?role=${role}&room=${room ?? document.getElementById("room").value}`;
   const logEl = $("log");
   const log = (m) => {
     const t = new Date().toLocaleTimeString("ko-KR", { hour12: false });
@@ -185,6 +206,62 @@
     $("rtt-max").textContent = s[s.length - 1].toFixed(0);
   }
   $("btn-ping").onclick = measure;
+
+  /* ---------- 2-1. 위치 진단 ---------- */
+  const median = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+  const setCell = (id, v) => { $(id).textContent = v; };
+
+  async function httpRtts(n) {
+    const out = []; let colo = null;
+    for (let i = 0; i < n; i++) {
+      const t0 = performance.now();
+      const h = await (await fetch("/api/health?t=" + Math.random(), { cache: "no-store" })).json();
+      out.push(performance.now() - t0); colo = h.colo;
+    }
+    return { out, colo };
+  }
+  function wsRtts(room, n) {
+    return new Promise((resolve) => {
+      const s = new WebSocket(wsUrl("probe", room));
+      const out = []; let t0 = 0, i = 0;
+      const done = () => { try { s.close(1000); } catch {} resolve(out); };
+      const timer = setTimeout(done, 20000);
+      const send = () => { t0 = performance.now(); s.send(JSON.stringify({ t: "echo", ts: t0 })); };
+      s.onmessage = (e) => {
+        const m = JSON.parse(e.data);
+        if (m.t === "hello") return send();           // 연결 직후 첫 응답은 빼고 측정 시작
+        if (m.t !== "echo") return;
+        out.push(performance.now() - t0);
+        if (++i >= n) { clearTimeout(timer); done(); } else setTimeout(send, 100);
+      };
+      s.onerror = () => { clearTimeout(timer); done(); };
+    });
+  }
+  async function where(room) {
+    try { return (await (await fetch(`/api/where?room=${room}`, { cache: "no-store" })).json()).colo ?? "?"; }
+    catch { return "?"; }
+  }
+  $("btn-diag").onclick = async () => {
+    $("btn-diag").disabled = true;
+    try {
+      $("diag-status").textContent = "접점 측정 중…";
+      const edge = await httpRtts(10);
+      setCell("d-edge-colo", edge.colo ?? "?");
+      setCell("d-edge-med", median(edge.out).toFixed(0)); setCell("d-edge-max", Math.max(...edge.out).toFixed(0));
+
+      for (const room of ["default", "apac"]) {
+        const p = room === "default" ? "d-def" : "d-apac";
+        $("diag-status").textContent = (room === "default" ? "기본" : "아시아") + " 배치 DO 측정 중…";
+        setCell(p + "-colo", await where(room));
+        const r = await wsRtts(room, 10);
+        if (r.length) { setCell(p + "-med", median(r).toFixed(0)); setCell(p + "-max", Math.max(...r).toFixed(0)); }
+        else setCell(p + "-med", "실패");
+      }
+      $("diag-status").textContent = "완료";
+      $("diag-note").textContent = "접점 지연이 크면(100ms 이상) 기기에서 Cloudflare까지 가는 경로 문제이고, DO 지연에서 접점 지연을 뺀 값이 접점에서 DO까지의 구간입니다. 아시아 배치가 확실히 빠르면 학급 DO를 아시아에 두면 됩니다.";
+      log(`위치 진단: 접점 ${$("d-edge-colo").textContent} ${$("d-edge-med").textContent}ms / 기본 DO ${$("d-def-colo").textContent} ${$("d-def-med").textContent}ms / 아시아 DO ${$("d-apac-colo").textContent} ${$("d-apac-med").textContent}ms`);
+    } finally { $("btn-diag").disabled = false; }
+  };
 
   /* ---------- 3. 판서 동기화 (jmschool판과 같은 40ms 간격) ---------- */
   const cv = $("board"), cx = cv.getContext("2d");
@@ -316,7 +393,7 @@
 
   async function checkStats() {
     try {
-      const r = await fetch("/api/stats", { cache: "no-store" });
+      const r = await fetch(`/api/stats?room=${$("room").value}`, { cache: "no-store" });
       const s = await r.json();
       if (!r.ok) { log(`서버 상태 확인 실패 (${r.status}): ${s.message || s.error}`); return; }
       $("p-server").textContent = fmt(s.received);
