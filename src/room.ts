@@ -20,7 +20,7 @@ import {
   validateObj, cleanWebUrl, cleanColor, num, type Obj,
 } from "./lib/validate";
 
-export const SERVER_VERSION = "0.2.0";
+export const SERVER_VERSION = "0.2.1";
 
 const TEACHER_DEVICES = new Set(["display", "teacher-pc", "teacher-tablet"]);
 const TOKEN_DAYS = 30;
@@ -45,7 +45,9 @@ const ACTIVE_MS = 20 * 60_000;    // 시작한 뒤 최대(10분씩 늘릴 수 �
 const MAX_OPEN = 8;
 const STUDENT_TOKEN_HOURS = 12;
 // 헷갈리는 글자(0·O·1·I·L)를 뺀 학급 코드 글자
-const CODE_CHARS = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+const CODE_RE = /^\d{6}$/;
+const CODE_FAIL_MAX = 30;            // IP당 10분에 틀린 코드 30번까지(학교는 IP 하나를 같이 씀)
+const CODE_FAIL_WINDOW = 10 * 60_000;
 
 type Json = Record<string, unknown>;
 type Ack = Json | undefined;
@@ -96,7 +98,6 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
   private sql: SqlStorage;
   private pages = new Map<number, PageState>();
   private loginFails = { n: 0, until: 0 };
-  private joinFails = { n: 0, until: 0 };
 
   constructor(ctx: DurableObjectState, env: Record<string, unknown>) {
     super(ctx, env);
@@ -167,24 +168,40 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
 
   /** 학생 토큰은 발급 때의 학급 코드 판이 지금과 같아야 합니다. */
   private checkStudentCode(p: TokenPayload): TokenPayload {
-    if (p.role === "student" && p.cv !== Number(this.cfg("code_ver") || 0)) throw new TokenError("code_changed");
+    if (p.role === "student" && (this.classCode(), p.cv) !== Number(this.cfg("code_ver") || 0)) throw new TokenError("code_changed");
     return p;
   }
 
   /* ───────────── 학급 코드 ───────────── */
 
   private newCode(): string {
-    const r = crypto.getRandomValues(new Uint8Array(6));
-    return [...r].map((b) => CODE_CHARS[b % CODE_CHARS.length]).join("");
+    const r = new Uint32Array(1);
+    do crypto.getRandomValues(r); while (r[0] >= 4_294_000_000);   // 치우침 없이 000000~999999
+    return String(r[0] % 1_000_000).padStart(6, "0");
   }
   private classCode(): string {
     let c = this.cfg("class_code");
-    if (!c) { c = this.newCode(); this.setCfg("class_code", c); this.setCfg("code_ver", 1); }
+    if (!c || !CODE_RE.test(c)) {                 // 0.2.0의 영문 코드는 숫자 코드로 바꿈(학생은 다시 들어와야 함)
+      c = this.newCode(); this.setCfg("class_code", c);
+      this.setCfg("code_ver", Number(this.cfg("code_ver") || 0) + 1);
+    }
     return c;
+  }
+  private codeFails = new Map<string, { n: number; reset: number }>();
+  private codeLocked(ip: string): boolean {
+    const f = this.codeFails.get(ip);
+    return !!f && Date.now() < f.reset && f.n >= CODE_FAIL_MAX;
+  }
+  private codeFailed(ip: string): void {
+    const now = Date.now();
+    let f = this.codeFails.get(ip);
+    if (!f || now >= f.reset) { f = { n: 0, reset: now + CODE_FAIL_WINDOW }; this.codeFails.set(ip, f); }
+    f.n++;
+    if (this.codeFails.size > 1000) for (const [k, v] of this.codeFails) if (now >= v.reset) this.codeFails.delete(k);
   }
   private codeMatches(input: unknown): boolean {
     const want = this.classCode();
-    const got = String(input ?? "").trim().toUpperCase();
+    const got = String(input ?? "").replace(/\D/g, "");
     if (got.length !== want.length) return false;
     let d = 0;
     for (let i = 0; i < got.length; i++) d |= got.charCodeAt(i) ^ want.charCodeAt(i);
@@ -246,21 +263,21 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       return json({ ...t, role: "teacher" });
     }
 
+    const ip = req.headers.get("cf-connecting-ip") || "local";
     if (path === "/student/class" && method === "GET") {
-      if (!this.configured() || !this.codeMatches(url.searchParams.get("code"))) return fail(404, "bad_code", "학급 코드가 맞지 않습니다");
+      if (!this.configured()) return fail(409, "not_configured", "아직 설치 설정을 하지 않았습니다");
+      if (this.codeLocked(ip)) return fail(429, "locked", "코드를 여러 번 틀렸습니다. 10분 뒤에 다시 해 보세요");
+      if (!this.codeMatches(url.searchParams.get("code"))) { this.codeFailed(ip); return fail(404, "bad_code", "학급 코드가 맞지 않습니다"); }
       const k = this.klass();
       return json({ ok: true, grade: k.grade, class: k.class, size: k.size });
     }
     if (path === "/student/join" && method === "POST") {
       if (!this.configured()) return fail(409, "not_configured", "아직 설치 설정을 하지 않았습니다");
-      if (Date.now() < this.joinFails.until) return fail(429, "locked", "잠시 뒤에 다시 시도하세요");
+      if (this.codeLocked(ip)) return fail(429, "locked", "코드를 여러 번 틀렸습니다. 10분 뒤에 다시 해 보세요");
       const b = await body();
       const k = this.klass();
       const n = Number(b.num);
-      if (!this.codeMatches(b.code)) {
-        if (++this.joinFails.n >= 20) this.joinFails = { n: 0, until: Date.now() + 60_000 };
-        return fail(403, "bad_code", "학급 코드가 맞지 않습니다");
-      }
+      if (!this.codeMatches(b.code)) { this.codeFailed(ip); return fail(403, "bad_code", "학급 코드가 맞지 않습니다"); }
       if (!Number.isInteger(n) || n < 1 || n > k.size) return fail(400, "bad_num", "번호를 확인하세요");
       const t = await this.tokenFor({ sub: `s${n}`, name: `${n}번`, role: "student", num: n,
         cv: Number(this.cfg("code_ver") || 1) }, STUDENT_TOKEN_HOURS / 24);

@@ -259,10 +259,10 @@ async function showJoin(code, msg = '') {
 }
 
 async function checkCode(code) {
-  code = String(code || '').trim().toUpperCase();
+  code = String(code || '').replace(/\D/g, '');
   const r = await fetch(`/eboard-api/student/class?code=${encodeURIComponent(code)}`, { cache: 'no-store' }).catch(() => null);
   const j = r ? await r.json().catch(() => ({})) : {};
-  if (!r || !r.ok) { $('#join-err').textContent = r ? '학급 코드가 맞지 않습니다. 칠판의 코드를 다시 확인하세요.' : '인터넷 연결을 확인하세요'; return; }
+  if (!r || !r.ok) { $('#join-err').textContent = !r ? '인터넷 연결을 확인하세요' : r.status === 429 ? j.detail.message : '학급 코드가 맞지 않습니다. 칠판의 코드를 다시 확인하세요.'; return; }
   $('#join-err').textContent = '';
   $('#join-title').textContent = `${j.grade}학년 ${j.class}반`;
   $('#join-desc').textContent = '내 번호를 누르세요';
@@ -290,7 +290,12 @@ async function join(code, num) {
 
 function boot() {
   $('#join-code-form').onsubmit = (e) => { e.preventDefault(); checkCode($('#join-code').value); };
-  const urlCode = (new URLSearchParams(location.search).get('c') || '').trim().toUpperCase();
+  $('#join-code').oninput = (e) => {                 // 숫자만, 6자리 채우면 바로 확인
+    const v = e.target.value.replace(/\D/g, '').slice(0, 6);
+    if (v !== e.target.value) e.target.value = v;
+    if (v.length === 6) checkCode(v);
+  };
+  const urlCode = (new URLSearchParams(location.search).get('c') || '').replace(/\D/g, '');
   const t = savedToken('student');
   if (!t || (urlCode && t.code !== urlCode)) { showJoin(urlCode); return; }
   myCode = t.code;

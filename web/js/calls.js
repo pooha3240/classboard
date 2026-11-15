@@ -13,6 +13,7 @@ const ERR = { bad_class: '합반에 참여하지 않은 반입니다', already_c
 const who = (g) => (g.name ? `${g.seat}. ${g.name}` : `${g.seat}번`);
 const studentUrl = (code) => `${location.origin}/s?c=${code}`;
 const qrSvg = (text) => { const q = qrcode(0, 'M'); q.addData(text); q.make(); return q.createSvgTag({ cellSize: 4, margin: 2, scalable: true }); };
+const fmtCode = (c) => `${c.slice(0, 3)} ${c.slice(3)}`;   // 123 456: 아이들이 읽기 쉽게
 
 export class CallTools {
   constructor({ net, toast, sound }) {
@@ -63,7 +64,7 @@ export class CallTools {
     }
     el.innerHTML = `<div class="ct-card wide" style="text-align:center;max-width:min(90vw,720px)">
       <div style="width:min(60vh,520px);margin:0 auto">${qrSvg(studentUrl(this.code))}</div>
-      <p style="font-size:40px;font-weight:800;letter-spacing:.25em;margin:12px 0 4px">${esc(this.code)}</p>
+      <p style="font-size:40px;font-weight:800;letter-spacing:.25em;margin:12px 0 4px">${esc(fmtCode(this.code))}</p>
       <p class="muted">${esc(location.origin)}/s 에서 코드를 넣어도 됩니다 · 눌러서 닫기</p></div>`;
     el.hidden = false;
   }
@@ -121,7 +122,7 @@ export class CallTools {
         <button type="button" class="call-qr" title="크게 보기" style="width:132px;height:132px;padding:0;border:1px solid var(--line);border-radius:10px;background:#fff;cursor:zoom-in;flex:none">${this.code ? qrSvg(studentUrl(this.code)) : ''}</button>
         <div style="min-width:0">
           <p class="muted small" style="margin:0 0 4px">학생은 태블릿으로 QR 을 찍고 자기 번호를 고르면 됩니다.</p>
-          <p style="margin:0 0 8px;font-size:22px;font-weight:800;letter-spacing:.15em">${esc(this.code || '······')}</p>
+          <p style="margin:0 0 8px;font-size:22px;font-weight:800;letter-spacing:.15em">${esc(this.code ? fmtCode(this.code) : '··· ···')}</p>
           <div class="ct-row" style="gap:6px"><button type="button" class="chip" data-qr="big">크게 보기</button><button type="button" class="chip" data-qr="rotate">코드 바꾸기</button></div>
           <p class="muted small" style="margin:6px 0 0">초록 점 = 지금 학생 화면을 열어 둔 번호</p>
         </div>
