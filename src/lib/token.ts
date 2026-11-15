@@ -44,6 +44,7 @@ export interface TokenPayload {
   lg?: number | null;
   lc?: number | null;
   pin?: number | null;
+  cv?: number;          // 학생 토큰: 발급 때의 학급 코드 판(코드를 바꾸면 옛 토큰은 무효)
   iat: number;
   exp: number;
 }

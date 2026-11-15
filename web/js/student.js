@@ -1,7 +1,8 @@
-// 학생 화면: 선생님이 부를 때만 사진 보내기 / 칠판에 풀기
+// 학생 화면: 선생님이 부를 때만 칠판에 풀기 (사진 보내기는 저장판)
+// classboard: 학생 계정 대신 학급 코드 + 번호로 들어옵니다(QR 로 들어오면 코드가 채워짐).
 import { Board } from './model.js';
 import { Renderer } from './render.js';
-import { Net } from './net.js';
+import { Net, savedToken, saveToken, clearToken } from './net.js';
 import { Tools } from './tools.js';
 import { Receiver } from './rtc.js';
 import { VideoBg } from './video.js';
@@ -14,6 +15,7 @@ let grant = null;               // 지금 진행 중인 호출
 let rx = null;                  // 선생님 음성·영상(원격 참여)
 let vbg = null;                 // 동영상 배경(선생님이 조작, 집에서 보는 학생만 소리)
 const mine = new Set();         // 내가 그린 객체(지우기·고치기 가능)
+let myCode = '';                // 들어올 때 쓴 학급 코드
 
 function toast(msg, ms = 2600) {
   const t = $('#toast');
@@ -24,7 +26,7 @@ function toast(msg, ms = 2600) {
 function setStatus(state, text) { $('#conn').dataset.state = state; $('#conn-text').textContent = text; }
 
 function show(id) {
-  for (const s of ['wait', 'invite', 'photo', 'solve']) $('#' + s).hidden = s !== id;
+  for (const s of ['join', 'wait', 'invite', 'photo', 'solve']) $('#' + s).hidden = s !== id;
   $('#mode-label').textContent = id === 'photo' ? '사진 보내기' : id === 'solve' ? (grant && grant.home ? (grant.mode === 'solve' ? '원격 참여 · 칠판에 쓰기' : '원격 참여') : '칠판에 풀기') : '';
   if (id === 'solve' && renderer) requestAnimationFrame(() => renderer.resize());
 }
@@ -243,13 +245,71 @@ async function resume() {
   accept();                                         // 풀이 중에 끊겼다가 다시 연결: 칠판으로 다시 들어감
 }
 
+// ── 들어오기: 학급 코드 + 번호 ──
+async function showJoin(code, msg = '') {
+  if (net) { net.socket.disconnect(); net = null; }
+  $('#me').textContent = ''; $('#btn-change').hidden = true;
+  setStatus('wait', '');
+  show('join');
+  $('#join-err').textContent = msg;
+  $('#join-nums').hidden = true; $('#join-code-form').hidden = false;
+  $('#join-title').textContent = '학급 코드를 넣으세요';
+  $('#join-desc').textContent = '칠판에 보이는 QR 코드를 찍거나, 코드 6자리를 넣으세요.';
+  if (code) { $('#join-code').value = code; await checkCode(code); }
+}
+
+async function checkCode(code) {
+  code = String(code || '').trim().toUpperCase();
+  const r = await fetch(`/eboard-api/student/class?code=${encodeURIComponent(code)}`, { cache: 'no-store' }).catch(() => null);
+  const j = r ? await r.json().catch(() => ({})) : {};
+  if (!r || !r.ok) { $('#join-err').textContent = r ? '학급 코드가 맞지 않습니다. 칠판의 코드를 다시 확인하세요.' : '인터넷 연결을 확인하세요'; return; }
+  $('#join-err').textContent = '';
+  $('#join-title').textContent = `${j.grade}학년 ${j.class}반`;
+  $('#join-desc').textContent = '내 번호를 누르세요';
+  $('#join-code-form').hidden = true;
+  const box = $('#join-nums');
+  box.innerHTML = '';
+  for (let n = 1; n <= j.size; n++) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = n;
+    b.onclick = () => join(code, n);
+    box.appendChild(b);
+  }
+  box.hidden = false;
+}
+
+async function join(code, num) {
+  const r = await fetch('/eboard-api/student/join', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code, num }),
+  }).catch(() => null);
+  const j = r ? await r.json().catch(() => ({})) : {};
+  if (!r || !r.ok) { $('#join-err').textContent = (j.detail && j.detail.message) || '들어가지 못했습니다'; return; }
+  saveToken({ token: j.token, exp: j.exp, code, num }, 'student');
+  location.replace(`${location.pathname}?c=${encodeURIComponent(code)}`);
+}
+
+function boot() {
+  $('#join-code-form').onsubmit = (e) => { e.preventDefault(); checkCode($('#join-code').value); };
+  const urlCode = (new URLSearchParams(location.search).get('c') || '').trim().toUpperCase();
+  const t = savedToken('student');
+  if (!t || (urlCode && t.code !== urlCode)) { showJoin(urlCode); return; }
+  myCode = t.code;
+  $('#me').textContent = `${t.num}번`;
+  $('#btn-change').hidden = false;
+  $('#btn-change').onclick = () => { clearToken('student'); showJoin(t.code); };
+  show('wait');
+  start();
+}
+
 function start() {
   net = new Net('student');
   net.addEventListener('connect', () => { setStatus('ok', '연결됨'); resume(); });
   net.addEventListener('disconnect', () => setStatus('bad', '끊김 · 다시 연결 중'));
   net.addEventListener('connect-error', () => setStatus('bad', '연결 실패 · 다시 시도 중'));
   net.addEventListener('auth-error', (e) => {
-    if (e.detail.code === 'not_logged_in') { net.socket.disconnect(); setStatus('bad', '로그인 필요'); $('#login-needed').hidden = false; }
+    const old = myCode;
+    if (e.detail.code === 'code_changed') showJoin('', '학급 코드가 바뀌었습니다. 칠판의 QR 코드를 다시 찍어 주세요.');
+    else if (e.detail.code === 'not_logged_in') showJoin(old, '다시 번호를 골라 주세요.');
   });
   net.addEventListener('hello', (e) => {
     const sv = e.detail.server_version;
@@ -295,4 +355,4 @@ function start() {
   window.__stu = { get net() { return net; }, get board() { return board; }, get tools() { return tools; }, get renderer() { return renderer; }, mine };
 }
 
-start();
+boot();

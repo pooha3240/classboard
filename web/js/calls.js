@@ -1,9 +1,18 @@
 // 학생 호출(교사 쪽): 수업 도구의 '호출' 탭, 칠판 아래 호출 막대, 학생 사진 승인
-// 학생은 student.php 를 열어 두면 부를 수 있습니다. 칠판은 부른 학생에게만, 허락한 동안만 보입니다.
+// classboard: 학생은 호출 탭의 QR(학생 주소 + 학급 코드)을 찍고 번호를 골라 들어옵니다.
+// 칠판은 부른 학생에게만, 허락한 동안만 보입니다.
+import qrcode from '../vendor/qrcode.mjs';
+import { askConfirm } from './ui.js';
+
+// 판마다 다른 기능: 사진 받기는 저장판, 원격 참여는 서버판
+const FEATURES = { photo: false, watch: false };
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const MODE = { photo: '사진', solve: '칠판 풀이', watch: '원격 참여' };
-const ERR = { bad_class: '합반에 참여하지 않은 반입니다', already_called: '이미 부른 학생입니다', too_many: '동시에 부를 수 있는 학생 수(8명)를 넘었습니다', no_student: '명단에 계정이 연결되지 않은 번호입니다' };
+const ERR = { bad_class: '합반에 참여하지 않은 반입니다', already_called: '이미 부른 학생입니다', too_many: '동시에 부를 수 있는 학생 수(8명)를 넘었습니다', no_student: '명단에 없는 번호입니다', not_available: '이 판에서는 쓸 수 없는 기능입니다' };
+const who = (g) => (g.name ? `${g.seat}. ${g.name}` : `${g.seat}번`);
+const studentUrl = (code) => `${location.origin}/s?c=${code}`;
+const qrSvg = (text) => { const q = qrcode(0, 'M'); q.addData(text); q.make(); return q.createSvgTag({ cellSize: 4, margin: 2, scalable: true }); };
 
 export class CallTools {
   constructor({ net, toast, sound }) {
@@ -15,10 +24,48 @@ export class CallTools {
     this.getClass = () => null; this.joint = null; this.api = null;
     this.tabBody = null; this.students = [];
     this._seenPhotos = new Set();
+    this.code = null;           // 학급 코드(학생 들어오기용)
     this._buildStrip();
     this._buildApprove();
     net.addEventListener('call:grants', (e) => this._update(e.detail));
     setInterval(() => this._renderStrip(), 1000);      // 남은 시간 표시
+  }
+
+  async _token() { return this.net.lastToken || this.net.token(); }
+
+  async loadCode(force = false) {
+    if (this.code && !force) return this.code;
+    try {
+      const r = await fetch('/eboard-api/class-code', { headers: { Authorization: 'Bearer ' + await this._token() } });
+      if (r.ok) this.code = (await r.json()).code;
+    } catch { /* 다음에 다시 */ }
+    return this.code;
+  }
+
+  async rotateCode() {
+    try {
+      const r = await fetch('/eboard-api/class-code/rotate', { method: 'POST', headers: { Authorization: 'Bearer ' + await this._token() } });
+      if (!r.ok) throw new Error();
+      this.code = (await r.json()).code;
+      this.toast('학급 코드를 바꿨습니다. 학생들은 새 QR 을 찍어야 합니다', 3500);
+    } catch { this.toast('코드를 바꾸지 못했습니다'); }
+  }
+
+  // 교실 모두가 찍을 수 있게 칠판에 QR 을 크게 띄움
+  showBigQr() {
+    if (!this.code) return;
+    let el = document.getElementById('call-qr-big');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'call-qr-big'; el.className = 'ct-overlay';
+      el.addEventListener('click', () => { el.hidden = true; });
+      document.body.appendChild(el);
+    }
+    el.innerHTML = `<div class="ct-card wide" style="text-align:center;max-width:min(90vw,720px)">
+      <div style="width:min(60vh,520px);margin:0 auto">${qrSvg(studentUrl(this.code))}</div>
+      <p style="font-size:40px;font-weight:800;letter-spacing:.25em;margin:12px 0 4px">${esc(this.code)}</p>
+      <p class="muted">${esc(location.origin)}/s 에서 코드를 넣어도 됩니다 · 눌러서 닫기</p></div>`;
+    el.hidden = false;
   }
 
   async refresh() {
@@ -70,21 +117,36 @@ export class CallTools {
     const called = new Map(this.grants.filter((g) => `${g.grade}-${g.class}` === ck).map((g) => [g.seat, g]));
     const sel = this.sel;
     body.innerHTML = `
-      <p class="muted small">학생은 태블릿에서 <b>${esc(location.origin)}/eboard/student.php</b> 를 열어 두면 됩니다. 초록 점 = 지금 열어 둔 학생</p>
+      <div class="call-join" style="display:flex;gap:14px;align-items:center;margin-bottom:10px">
+        <button type="button" class="call-qr" title="크게 보기" style="width:132px;height:132px;padding:0;border:1px solid var(--line);border-radius:10px;background:#fff;cursor:zoom-in;flex:none">${this.code ? qrSvg(studentUrl(this.code)) : ''}</button>
+        <div style="min-width:0">
+          <p class="muted small" style="margin:0 0 4px">학생은 태블릿으로 QR 을 찍고 자기 번호를 고르면 됩니다.</p>
+          <p style="margin:0 0 8px;font-size:22px;font-weight:800;letter-spacing:.15em">${esc(this.code || '······')}</p>
+          <div class="ct-row" style="gap:6px"><button type="button" class="chip" data-qr="big">크게 보기</button><button type="button" class="chip" data-qr="rotate">코드 바꾸기</button></div>
+          <p class="muted small" style="margin:6px 0 0">초록 점 = 지금 학생 화면을 열어 둔 번호</p>
+        </div>
+      </div>
       ${keys.length > 1 ? `<div class="ct-row call-classes">${keys.map((k) => `<button type="button" class="chip ${k === ck ? 'on' : ''}" data-ck="${k}">${k.replace('-', '학년 ')}반</button>`).join('')}</div>` : ''}
       <div class="ct-chips call-chips">${list.map((st) => {
         const g = called.get(st.seat);
         return `<button type="button" data-seat="${st.seat}" class="${sel === st.seat ? 'on' : ''} ${g ? 'picked' : ''}">
-          <i class="dot ${this.online.has(`${cg}-${cc}-${st.seat}`) ? 'on' : ''}"></i>${esc(`${st.seat}. ${st.name}`)}${g ? ` · ${MODE[g.mode]}` : ''}</button>`;
+          <i class="dot ${this.online.has(`${cg}-${cc}-${st.seat}`) ? 'on' : ''}"></i>${esc(who(st))}${g ? ` · ${MODE[g.mode]}` : ''}</button>`;
       }).join('')}</div>
       <div class="ct-row call-actions">
         <button type="button" class="ct-big" data-mode="solve" ${sel ? '' : 'disabled'}>칠판에 풀기</button>
-        <button type="button" class="ct-big alt" data-mode="photo" ${sel ? '' : 'disabled'}>사진 받기</button>
-        <button type="button" class="ct-big alt" data-mode="watch" ${sel ? '' : 'disabled'} title="집에 있는 학생: 칠판·선생님 음성과 영상을 보고 손들기">원격 참여(집)</button>
+        ${FEATURES.photo ? `<button type="button" class="ct-big alt" data-mode="photo" ${sel ? '' : 'disabled'}>사진 받기</button>` : ''}
+        ${FEATURES.watch ? `<button type="button" class="ct-big alt" data-mode="watch" ${sel ? '' : 'disabled'} title="집에 있는 학생: 칠판·선생님 음성과 영상을 보고 손들기">원격 참여(집)</button>` : ''}
       </div>
-      <p class="muted small">칠판에 풀기: 부른 학생의 태블릿에 지금 칠판이 보이고, 학생이 쓴 것이 칠판에 바로 나옵니다(자기가 쓴 것만 지울 수 있음).<br>
-      사진 받기: 학생이 찍어 보낸 사진을 선생님이 보고 칠판에 넣습니다.<br>
-      원격 참여: 아파서 집에 있는 학생이 칠판과 합반 수업 음성·영상을 보고, 손을 들면 칠판에 쓰게 해 줄 수 있습니다.</p>`;
+      <p class="muted small">칠판에 풀기: 부른 학생의 태블릿에 지금 칠판이 보이고, 학생이 쓴 것이 칠판에 바로 나옵니다(자기가 쓴 것만 지울 수 있음).${FEATURES.photo ? '<br>사진 받기: 학생이 찍어 보낸 사진을 선생님이 보고 칠판에 넣습니다.' : ''}</p>`;
+    if (!this.code) this.loadCode().then((c) => { if (c && body.isConnected) this.renderTab(body, students); });
+    body.querySelector('.call-qr').onclick = () => this.showBigQr();
+    body.querySelectorAll('[data-qr]').forEach((b) => {
+      b.onclick = async () => {
+        if (b.dataset.qr === 'big') { this.showBigQr(); return; }
+        if (!(await askConfirm('학급 코드를 바꿀까요? 지금 들어와 있는 학생들은 새 QR 을 다시 찍어야 합니다.', '코드 바꾸기'))) return;
+        await this.rotateCode(); this.renderTab(body, students);
+      };
+    });
     body.querySelector('.call-classes')?.addEventListener('click', (e) => {
       const b = e.target.closest('[data-ck]'); if (!b) return;
       this.selClass = b.dataset.ck; this.sel = null; this.renderTab(body, students);
@@ -147,7 +209,7 @@ export class CallTools {
       const mm = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
       return `<div class="call-chip ${g.status} ${g.done ? 'done' : ''} ${g.hand ? 'hand' : ''}">
         ${g.photo ? `<button type="button" class="call-thumb" data-photo="${g.id}" title="사진 보기"><img src="${g.photo.thumb}" alt=""></button>` : ''}
-        <span class="who">${esc(`${`${g.grade}-${g.class}` !== this._myKey() ? `${g.grade}-${g.class} ` : ''}${g.seat}. ${g.name}`)}</span>
+        <span class="who">${esc(`${`${g.grade}-${g.class}` !== this._myKey() ? `${g.grade}-${g.class} ` : ''}${who(g)}`)}</span>
         <span class="st">${MODE[g.mode]} · ${this._status(g)}</span>
         ${g.home && g.status === 'active' ? `<button type="button" class="time" data-id="${g.id}" data-cmode="${g.mode === 'solve' ? 'watch' : 'solve'}">${g.mode === 'solve' ? '보기만' : '쓰기 허락'}</button>` : ''}
         <button type="button" class="time" data-extend="${g.id}" title="10분 늘리기">${mm}</button>

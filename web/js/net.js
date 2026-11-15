@@ -9,16 +9,17 @@ import { newId } from './model.js';
 
 const FLUSH_MS = 40;
 const MAX_BATCH = 200;
-const TOKEN_KEY = 'eboard.token';
+// 교사 토큰과 학생 토큰은 따로 둡니다(같은 기기에서 둘 다 열어 볼 수 있게).
+const keyOf = (who) => (who === 'student' ? 'eboard.stoken' : 'eboard.token');
 
-export function savedToken() {
+export function savedToken(who = 'teacher') {
   try {
-    const t = JSON.parse(localStorage.getItem(TOKEN_KEY) || 'null');
+    const t = JSON.parse(localStorage.getItem(keyOf(who)) || 'null');
     return t && t.exp * 1000 > Date.now() + 60_000 ? t : null;
   } catch { return null; }
 }
-export function saveToken(t) { try { localStorage.setItem(TOKEN_KEY, JSON.stringify(t)); } catch { /* 저장 불가 */ } }
-export function clearToken() { try { localStorage.removeItem(TOKEN_KEY); } catch { /* 무시 */ } }
+export function saveToken(t, who = 'teacher') { try { localStorage.setItem(keyOf(who), JSON.stringify(t)); } catch { /* 저장 불가 */ } }
+export function clearToken(who = 'teacher') { try { localStorage.removeItem(keyOf(who)); } catch { /* 무시 */ } }
 
 export class Net extends EventTarget {
   constructor(device, deviceKey = null) {
@@ -63,7 +64,8 @@ export class Net extends EventTarget {
       this.lastToken = j.token;
       return j.token;
     }
-    const t = savedToken();
+    const who = this.device === 'student' ? 'student' : 'teacher';
+    const t = savedToken(who);
     if (!t) {
       const e = new Error('로그인이 필요합니다');
       e.code = 'not_logged_in';
@@ -112,7 +114,8 @@ export class Net extends EventTarget {
       if (m.e === 'auth-error') {
         const e = new Error(m.d && m.d.error);
         e.code = m.d && m.d.error;
-        if (e.code === 'not_logged_in' || e.code === 'bad_signature' || e.code === 'expired') { clearToken(); e.code = 'not_logged_in'; }
+        const who = this.device === 'student' ? 'student' : 'teacher';
+        if (['not_logged_in', 'bad_signature', 'expired', 'code_changed'].includes(e.code)) { clearToken(who); if (e.code !== 'code_changed') e.code = 'not_logged_in'; }
         this._stopped = true;
         this._emit('auth-error', e);
         return;
