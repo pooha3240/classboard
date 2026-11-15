@@ -93,7 +93,7 @@ async function checkVersion() {
   const el = $('#ver');
   let cur = '', edition = 'basic';
   try { const h = await (await fetch('/api/health', { cache: 'no-store' })).json(); cur = h.version; edition = h.edition || 'basic'; } catch { /* 무시 */ }
-  if (edition === 'storage') { $('#store-panel').hidden = false; loadStore(); }
+  loadStore(edition);
   let latest = '';
   try { latest = (await (await fetch('https://raw.githubusercontent.com/pooha3240/classboard/main/package.json', { cache: 'no-store' })).json()).version; } catch { /* 무시 */ }
   const newer = (a, b) => { const x = a.split('.').map(Number), y = b.split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
@@ -103,13 +103,18 @@ checkVersion();
 
 // ── 저장판: 저장 공간·백업·되살리기 ──
 const mb = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)}GB` : n >= 1e6 ? `${Math.round(n / 1e6)}MB` : `${Math.max(1, Math.round(n / 1e3))}KB`);
-async function loadStore() {
+let edition = 'basic';
+async function loadStore(ed = edition) {
+  edition = ed;
   try {
     const j = await api('/history/sessions?start=9999-01-01');
     const s = j.storage, r2 = s.r2;
-    $('#store-usage').innerHTML = `칠판 저장소 ${mb(s.db)} / ${mb(s.budget)}` + (r2 ? ` · R2 ${mb(r2.media + r2.archive)} / ${mb(r2.cap)}
-      <span class="muted">(자료 ${mb(r2.media)}, 보관한 판서 기록 ${mb(r2.archive)})</span>` : '') +
-      '<br><span class="muted">R2 는 무료 10GB 를 넘지 않도록 8GB 에서 막습니다. 60일이 지난 판서 기록은 재생 기록까지 R2 로 옮겨 보관합니다.</span>';
+    $('#store-usage').innerHTML = r2
+      ? `칠판 저장소 ${mb(s.db)} / ${mb(s.budget)} · R2 ${mb(r2.media + r2.archive)} / ${mb(r2.cap)}
+        <span class="muted">(자료 ${mb(r2.media)}, 보관한 판서 기록 ${mb(r2.archive)})</span>
+        <br><span class="muted">R2 는 무료 10GB 를 넘지 않도록 8GB 에서 막습니다. 60일이 지난 판서 기록은 재생 기록까지 R2 로 옮겨 보관합니다.</span>`
+      : `칠판 저장소 ${mb(s.db)} / ${mb(s.budget)} <span class="muted">(자료 ${mb(s.media)} 포함)</span>
+        <br><span class="muted">기본판은 판서 기록과 자료를 합쳐 950MB 까지 씁니다. 판서 재생 기록은 60일까지 남습니다. 오래 보관하려면 백업을 내려받아 두세요.</span>`;
   } catch (e) { $('#store-usage').textContent = e.message; }
 }
 
@@ -180,11 +185,11 @@ $('#rs-go').onclick = async () => {
     const head = new Uint8Array(await f.slice(0, 2).arrayBuffer());
     if (head[0] === 0x1f && head[1] === 0x8b) stream = stream.pipeThrough(new DecompressionStream('gzip'));
     const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
-    let buf = '', batch = [], batchSize = 0, started = false, total = 0, blobs = 0;
+    let buf = '', batch = [], batchSize = 0, started = false, total = 0, blobs = 0, skipped = 0;
     const flush = async () => {
       if (!batch.length) return;
       const r = await post('rows', { lines: batch });
-      total += r.rows; blobs += r.blobs; batch = []; batchSize = 0;
+      total += r.rows; blobs += r.blobs; skipped += r.skipped; batch = []; batchSize = 0;
       st.textContent = `되살리는 중… ${total}줄${blobs ? ` · 자료 ${blobs}장` : ''}`;
     };
     const take = async (line) => {
@@ -208,7 +213,7 @@ $('#rs-go').onclick = async () => {
     await take(buf); await flush();
     if (!started) throw new Error('빈 파일입니다');
     await post('end', {});
-    st.textContent = `되살렸습니다 (${total}줄${blobs ? `, 자료 ${blobs}장` : ''}). 칠판을 새로 고치세요.`;
+    st.textContent = `되살렸습니다 (${total}줄${blobs ? `, 자료 ${blobs}장` : ''}).${skipped ? ` 자료 ${skipped}개는 공간이 모자라거나 읽을 수 없어 건너뛰었습니다.` : ''} 칠판을 새로 고치세요.`;
     $('#rs-pw').value = '';
     loadBells(); loadTimetable(); loadStore();
   } catch (e) { st.textContent = e.message; } finally { b.disabled = false; }

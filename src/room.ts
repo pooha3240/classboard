@@ -24,7 +24,7 @@ import {
   validateObj, cleanWebUrl, cleanColor, num, type Obj,
 } from "./lib/validate";
 
-export const SERVER_VERSION = "0.10.1";
+export const SERVER_VERSION = "0.11.0";
 
 const TEACHER_DEVICES = new Set(["display", "teacher-pc", "teacher-tablet"]);
 const TOKEN_DAYS = 30;
@@ -540,12 +540,11 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       return fail(404, "not_found", "없는 시험 요청");
     }
 
-    /* 저장판: 백업 내려받기·되살리기 */
+    /* 백업 내려받기·되살리기(기본판·저장판) */
     if (path.startsWith("/backup/")) {
-      if (!this.r2) return fail(404, "not_available", "백업은 저장판에서 쓸 수 있습니다");
       if (path === "/backup/part" && method === "GET") {
         if (!elev) return needPin();
-        return json(await this.backup.part(url.searchParams.get("cursor"), url.searchParams.get("media") === "1", SERVER_VERSION, "storage"));
+        return json(await this.backup.part(url.searchParams.get("cursor"), url.searchParams.get("media") === "1", SERVER_VERSION, this.r2 ? "storage" : "basic"));
       }
       if (u.dev) return loggedIn();                     // 되살리기는 교사 로그인(비밀번호 확인)으로만
       if (path === "/backup/restore/begin" && method === "POST") {
