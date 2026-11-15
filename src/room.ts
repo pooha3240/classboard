@@ -13,7 +13,7 @@
  *   "ping" → "pong" 은 자동 응답(DO를 깨우지 않음)
  */
 import { DurableObject } from "cloudflare:workers";
-import { PlanStore, PlanError } from "./plan";
+import { PlanStore, PlanError, neisCall, neisSchools, NEIS_TT, type NeisCfg } from "./plan";
 import { MediaStore, MediaError, MAX_PDF_PAGES, imageMeta, pageSizeFor, sniffImage } from "./media";
 import { sign, verify, TokenError, randomKey, hashPassword, checkPassword, sha256, shortSig, type TokenPayload } from "./lib/token";
 import { currentPeriod, kstNow, nextBoundary, periodLabel, normalize, type Bell } from "./lib/periods";
@@ -22,7 +22,7 @@ import {
   validateObj, cleanWebUrl, cleanColor, num, type Obj,
 } from "./lib/validate";
 
-export const SERVER_VERSION = "0.8.0";
+export const SERVER_VERSION = "0.9.0";
 
 const TEACHER_DEVICES = new Set(["display", "teacher-pc", "teacher-tablet"]);
 const TOKEN_DAYS = 30;
@@ -167,6 +167,36 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
     else this.sql.exec("INSERT INTO config (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v", k, String(v));
   }
   private configured(): boolean { return !!this.cfg("secret"); }
+
+  /* 나이스 시간표 자동 받기(선택): 교사가 설정에서 인증키·학교를 넣으면 켜짐 */
+  private neisCfg(): NeisCfg | null {
+    const key = this.cfg("neis_key"), school = this.cfg("neis_school"), office = this.cfg("neis_office");
+    if (!key || !school || !office) return null;
+    const base = String((this.env as Record<string, unknown>).NEIS_BASE || "https://open.neis.go.kr/hub");
+    return { key, office, school, kind: this.cfg("neis_kind") || "초등학교", base };
+  }
+  /** 다음 받을 때: 매일 새벽 5시 40분(KST) 즈음, 학교마다 몇 분씩 흩어지게 */
+  private neisNextAt(): number {
+    const now = Date.now();
+    const kstMidnight = Math.floor((now + 9 * 3600e3) / 86400e3) * 86400e3 - 9 * 3600e3;
+    let at = kstMidnight + (5 * 60 + 40 + Math.floor(Math.random() * 15)) * 60e3;
+    if (at <= now) at += 86400e3;
+    return at;
+  }
+  private async neisSync(opts: { termId?: number; force?: boolean } = {}) {
+    const cfg = this.neisCfg();
+    if (!cfg) throw new PlanError(400, "neis_off", "나이스 인증키가 설정되어 있지 않습니다(교시·시간표 설정에서 넣을 수 있습니다)");
+    try {
+      const results = await this.plan.syncNeis(cfg, this.klass(), kstNow().day, opts);
+      this.setCfg("neis_last", JSON.stringify({ ok: true, at: Date.now(), rows: results.reduce((n, r) => n + (r.rows || 0), 0),
+        changed: results.some((r) => r.changed) }));
+      this.relabelSessions(results.flatMap((r) => (r.last ? [kstNow().day] : [])));
+      return results;
+    } catch (e) {
+      if (e instanceof PlanError) this.setCfg("neis_last", JSON.stringify({ ok: false, at: Date.now(), error: e.message }));
+      throw e;
+    }
+  }
   private klass(): { grade: number; class: number; size: number } {
     return { grade: Number(this.cfg("grade")), class: Number(this.cfg("class")), size: Number(this.cfg("size") || 0) };
   }
@@ -493,6 +523,48 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
     }
 
     /* 교시 시각·학급 시간표 */
+    if (path === "/settings/neis" && method === "GET") {
+      const key = this.cfg("neis_key");
+      const last = this.cfg("neis_last");
+      return json({ on: !!this.neisCfg(), school_name: this.cfg("neis_school_name") ?? "", kind: this.cfg("neis_kind") ?? "",
+        office: this.cfg("neis_office") ?? "", school: this.cfg("neis_school") ?? "", key_hint: key ? `••••${key.slice(-4)}` : "",
+        last: last ? JSON.parse(last) : null, next: Number(this.cfg("neis_next") || 0) || null });
+    }
+    if (path === "/settings/neis/schools" && method === "GET") {
+      if (!elev) return needPin();
+      const name = (url.searchParams.get("name") ?? "").trim();
+      if (name.length < 2) return fail(400, "short", "학교 이름을 두 글자 이상 넣으세요");
+      const base = String((this.env as Record<string, unknown>).NEIS_BASE || "https://open.neis.go.kr/hub");
+      try { return json({ schools: await neisSchools(base, url.searchParams.get("key") || this.cfg("neis_key") || "", name.slice(0, 40)) }); }
+      catch (e) { if (e instanceof PlanError) return fail(e.status, e.code, e.message); throw e; }
+    }
+    if (path === "/settings/neis" && method === "PUT") {
+      if (!elev) return needPin();
+      const b = await body();
+      const key = String(b.key ?? "").trim() || this.cfg("neis_key") || "";
+      const office = String(b.office ?? "").trim(), school = String(b.school ?? "").trim(), kind = String(b.kind ?? "초등학교");
+      if (!/^[A-Za-z0-9]{10,64}$/.test(key)) return fail(400, "bad_key", "인증키를 확인하세요(나이스 교육정보 개방 포털에서 받은 영문·숫자)");
+      if (!/^[A-Z]\d{2}$/.test(office) || !/^\d{7}$/.test(school)) return fail(400, "bad_school", "학교를 검색해서 고르세요");
+      if (!(kind in NEIS_TT)) return fail(400, "bad_kind", "초·중·고등학교만 받을 수 있습니다");
+      // 인증키가 맞는지 학교 정보로 한 번 확인
+      const base = String((this.env as Record<string, unknown>).NEIS_BASE || "https://open.neis.go.kr/hub");
+      try {
+        const rows = await neisCall(base, "schoolInfo", { KEY: key, ATPT_OFCDC_SC_CODE: office, SD_SCHUL_CODE: school }, 1);
+        if (!rows.length) return fail(400, "bad_school", "나이스에서 그 학교를 찾지 못했습니다");
+      } catch (e) { if (e instanceof PlanError) return fail(400, "bad_key", e.message); throw e; }
+      this.setCfg("neis_key", key); this.setCfg("neis_office", office); this.setCfg("neis_school", school);
+      this.setCfg("neis_kind", kind); this.setCfg("neis_school_name", String(b.school_name ?? "").slice(0, 60));
+      this.setCfg("neis_next", this.neisNextAt());
+      let sync: unknown = null;
+      try { sync = await this.neisSync({ force: true }); } catch (e) { sync = { error: (e as Error).message }; }
+      await this.scheduleAlarm();
+      return json({ ok: true, sync });
+    }
+    if (path === "/settings/neis" && method === "DELETE") {
+      if (!elev) return needPin();
+      for (const k of ["neis_key", "neis_office", "neis_school", "neis_kind", "neis_school_name", "neis_next", "neis_last"]) this.setCfg(k, null);
+      return json({ ok: true });
+    }
     if (path === "/settings/bells" && method === "GET") {
       const rows = this.bells();
       return json({ default: !rows.length, bells: normalize(rows).map(([period, start, end]) => ({ period, start, end })),
@@ -615,7 +687,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
     const method = req.method;
     const today = kstNow().day;
     if (method === "GET") {
-      if (path === "/plan/week") return json(this.plan.week(url.searchParams.get("date") ?? "", today));
+      if (path === "/plan/week") return json(this.plan.week(url.searchParams.get("date") ?? "", today, !!this.neisCfg()));
       if (path === "/plan/terms") return json(this.plan.terms());
       if (path === "/plan/media") return json(this.plan.mediaList(url.searchParams.get("lkey") ?? ""));
       if (path === "/plan/now") { const s = this.slot(); return json(this.plan.now(s.day, s.period)); }
@@ -626,11 +698,24 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
     if (path === "/plan/upload" && method === "POST") {
       if (Number(req.headers.get("content-length") ?? 0) > 3 * 1024 * 1024) return fail(413, "too_large", "파일 내용이 너무 큽니다");
       const kind = url.searchParams.get("kind"), force = url.searchParams.get("force") === "1";
-      const r = kind === "timetable" ? await this.plan.uploadTt(await body(), this.klass(), force)
-        : await this.plan.uploadPlan(await body(), this.klass(), force, url.searchParams.get("name") ?? "");
+      if (kind === "timetable") {
+        const r = await this.plan.uploadTt(await body(), this.klass(), force);
+        this.relabelSessions([today]);
+        return json(r);
+      }
+      const r = await this.plan.uploadPlan(await body(), this.klass(), force, url.searchParams.get("name") ?? "");
+      if (this.neisCfg()) {                              // 나이스 인증키가 있으면 시간표를 받아 교시를 맞춤
+        try {
+          const n = await this.neisSync({ termId: r.term_id, force: true });
+          r.neis = { rows: n[0]?.rows ?? 0 };
+          const again = n[0] as Record<string, unknown> | undefined;
+          if (again && "matched" in again) Object.assign(r, { matched: again.matched, unplaced: again.unplaced, free: again.free, with_tt: again.with_tt, edits: again.edits, edits_dropped: again.edits_dropped });
+        } catch (e) { r.neis = { error: (e as Error).message }; }
+      }
       this.relabelSessions([today]);
       return json(r);
     }
+    if (path === "/plan/neis" && method === "POST") return json({ ok: true, results: await this.neisSync({ force: true }) });
     const slot = /^\/plan\/slot\/(\d+)$/.exec(path);
     if (slot && method === "POST") { this.relabelSessions(this.plan.slotAction(Number(slot[1]), await body())); return json({ ok: true }); }
     if (path === "/plan/swap" && method === "POST") {
@@ -968,6 +1053,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
     let at = live ? nextBoundary(this.bells()) : Infinity;
     if (dirty) at = Math.min(at, Date.now() + SNAP_IDLE_MS + 1000);
     for (const g of this.openGrants()) at = Math.min(at, g.expires + 500);
+    if (this.neisCfg()) at = Math.min(at, Number(this.cfg("neis_next") || 0) || this.neisNextAt());
     if (at === Infinity) return;
     const cur = await this.ctx.storage.getAlarm();
     if (cur === null || cur > at || cur < Date.now()) await this.ctx.storage.setAlarm(at);
@@ -982,6 +1068,10 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
         Date.now() - OPS_KEEP_DAYS * 86400e3);
     }
     this.expireGrants();
+    if (this.neisCfg() && Date.now() >= Number(this.cfg("neis_next") || 0)) {
+      this.setCfg("neis_next", this.neisNextAt());      // 실패해도 내일 다시(나이스가 막혀도 계속 두드리지 않음)
+      try { await this.neisSync(); } catch { /* neis_last 에 남김 */ }
+    }
     if (this.joinedSockets().length) {
       const prevRoom = this.room();
       const { day, period } = this.slot();

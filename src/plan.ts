@@ -24,6 +24,8 @@ export class PlanError extends Error {
 }
 
 const isCce = (s: string) => s in SHORT || s.endsWith("활동");
+/** 맞출 때만 쓰는 이름: 띄어쓰기·가운뎃점·'자치'를 빼서 '자율·자치활동'과 '자율활동'을 같은 과목으로 봄 */
+const canon = (s: string) => s.replace(/[\s·ㆍ.]/g, "").replace("자치", "");
 const shortSubject = (s: string) => SHORT[s] ?? s;
 const str = (v: unknown, n: number) => String(v ?? "").replace(/\s+/g, " ").trim().slice(0, n);
 
@@ -43,7 +45,69 @@ function mondayOf(d: string): string {
   return addDays(d, -wd);
 }
 
-type Term = { id: number; term_key: string; first_date: string; last_date: string; file_name: string; uploaded_at: number; src: string; tt_source: string | null };
+type Term = { id: number; term_key: string; first_date: string; last_date: string; file_name: string; uploaded_at: number; src: string; tt_source: string | null; tt_synced_at: number | null };
+
+/* ───────── 나이스 교육정보 개방 포털(선택: 인증키를 넣은 교사만) ───────── */
+
+export type NeisCfg = { key: string; office: string; school: string; kind: string; base: string };
+export const NEIS_TT: Record<string, string> = { 초등학교: "elsTimetable", 중학교: "misTimetable", 고등학교: "hisTimetable" };
+const ymd = (d: string) => d.replaceAll("-", "");
+
+/** 나이스 API 한 종류를 끝까지(페이지 넘기며) 받기. 데이터 없음은 빈 목록, 오류는 PlanError. */
+export async function neisCall(base: string, path: string, params: Record<string, string>, maxRows = 5000): Promise<Json[]> {
+  const rows: Json[] = [];
+  for (let idx = 1; idx <= 10; idx++) {
+    const q = new URLSearchParams({ Type: "json", pIndex: String(idx), pSize: "1000", ...params });
+    let j: Json;
+    try {
+      const r = await fetch(`${base}/${path}?${q}`, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(15000) });
+      j = (await r.json()) as Json;
+    } catch (e) {
+      throw new PlanError(502, "neis_error", `나이스에 연결하지 못했습니다 (${(e as Error).name})`);
+    }
+    const body = j[path] as Json[] | undefined;
+    if (!body) {
+      const res = (j.RESULT ?? {}) as Json;
+      if (res.CODE === "INFO-200") break;                       // 해당하는 데이터가 없음
+      const msg = String(res.MESSAGE ?? res.CODE ?? "알 수 없음");
+      const why = res.CODE === "ERROR-290" || res.CODE === "INFO-300" ? " (인증키를 확인하세요)" : res.CODE === "ERROR-337" ? " (하루 사용량 초과, 내일 다시)" : "";
+      throw new PlanError(502, "neis_error", `나이스 응답 오류: ${msg}${why}`);
+    }
+    const head = ((body[0] ?? {}) as Json).head as Json[] | undefined;
+    const total = Number(((head?.[0] ?? {}) as Json).list_total_count ?? 0);
+    const batch = (((body[1] ?? {}) as Json).row as Json[] | undefined) ?? [];
+    rows.push(...batch);
+    if (!batch.length || rows.length >= total || rows.length >= maxRows) break;
+  }
+  return rows;
+}
+
+/** 학교 찾기(설정 화면): 이름으로 */
+export async function neisSchools(base: string, key: string, name: string) {
+  const params: Record<string, string> = { SCHUL_NM: name };
+  if (key) params.KEY = key;
+  const rows = await neisCall(base, "schoolInfo", params, 30);
+  return rows.map((r) => ({ office: String(r.ATPT_OFCDC_SC_CODE ?? ""), office_name: String(r.ATPT_OFCDC_SC_NM ?? ""), school: String(r.SD_SCHUL_CODE ?? ""),
+    name: String(r.SCHUL_NM ?? ""), kind: String(r.SCHUL_KND_SC_NM ?? ""), address: String(r.ORG_RDNMA ?? "") }))
+    .filter((r) => r.office && r.school);
+}
+
+/** 그 기간 학급 시간표 → [날짜, 교시, 과목] */
+export async function neisTimetable(cfg: NeisCfg, grade: number, cls: number, d1: string, d2: string): Promise<[string, number, string][]> {
+  const path = NEIS_TT[cfg.kind] ?? "elsTimetable";
+  const rows = await neisCall(cfg.base, path, { KEY: cfg.key, ATPT_OFCDC_SC_CODE: cfg.office, SD_SCHUL_CODE: cfg.school,
+    GRADE: String(grade), CLASS_NM: String(cls), TI_FROM_YMD: ymd(d1), TI_TO_YMD: ymd(d2) });
+  const out = new Map<string, string>();
+  for (const x of rows) {
+    const t = String(x.ALL_TI_YMD ?? ""), p = Number(x.PERIO);
+    if (!/^\d{8}$/.test(t) || !Number.isInteger(p) || p < 1 || p > 9) continue;
+    const subj = String(x.ITRT_CNTNT ?? "").replace(/^[-\s]+/, "").trim().slice(0, 30);
+    const k = `${t.slice(0, 4)}-${t.slice(4, 6)}-${t.slice(6, 8)}|${p}`;
+    if (subj && !out.has(k)) out.set(k, subj);
+  }
+  return [...out.entries()].map(([k, sj]) => { const [d, p] = k.split("|"); return [d, Number(p), sj] as [string, number, string]; })
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] - b[1]));
+}
 type Slot = { id: number; term_id: number; slot_date: string; period: number; subject: string; orig_subject: string; cancelled: number; note: string };
 type Lesson = { id: number; term_id: number; subject: string; seq: number; unit: string; topic: string; lesson_no: number | null; lesson_total: number | null;
   pages: string; note: string; lkey: string; is_repeat: number; placeholder: number; skipped: number };
@@ -81,6 +145,7 @@ export class PlanStore {
         title TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS plan_media_lkey ON plan_media(lkey, ord);
     `);
+    try { this.sql.exec("ALTER TABLE plan_term ADD COLUMN tt_synced_at INTEGER"); } catch { /* 이미 있음 */ }
   }
 
   /* ───────── 차시 잇기 ───────── */
@@ -190,7 +255,7 @@ export class PlanStore {
     const stats = await this.rebuild(this.getTerm(tid)!);
     const subjects: Record<string, number> = {};
     for (const r of rows) subjects[r.subject] = (subjects[r.subject] ?? 0) + 1;
-    return { ok: true, kind: "plan", term: termKey, first, last, subjects, replaced: !!old, neis: null, ...stats };
+    return { ok: true, kind: "plan", term: termKey, term_id: tid, first, last, subjects, replaced: !!old, neis: null as Json | null, ...stats };
   }
 
   async uploadTt(body: Json, k: { grade: number; class: number }, force: boolean) {
@@ -240,7 +305,13 @@ export class PlanStore {
     const stats = { hours: src.length, matched: 0, unplaced: 0, free: 0, with_tt: tt.size > 0, edits: 0, edits_dropped: 0 };
     const ttDays = [...tt.keys()].sort();
     const queue = new Map<string, (["row", PlanRow] | ["ph", string, string, number])[]>();
-    const push = (subj: string, it: ["row", PlanRow] | ["ph", string, string, number]) => { if (!queue.has(subj)) queue.set(subj, []); queue.get(subj)!.push(it); };
+    // 차시 순서는 시간표의 과목 이름으로 묶음('자율·자치활동' 진도도 시간표가 '자율활동'이면 그 칸에 들어가게)
+    const ttName = new Map<string, string>();
+    for (const r of ttRows) if (!ttName.has(canon(r.subject))) ttName.set(canon(r.subject), r.subject);
+    const push = (name: string, it: ["row", PlanRow] | ["ph", string, string, number]) => {
+      const subj = ttName.get(canon(name)) ?? name;
+      if (!queue.has(subj)) queue.set(subj, []); queue.get(subj)!.push(it);
+    };
     const slotRows: [string, number, string][] = [];
     for (const d of [...new Set([...plan.keys(), ...tt.keys()])].sort()) {
       const rows = plan.get(d) ?? [];
@@ -249,7 +320,7 @@ export class PlanStore {
         const used = new Set<number>();
         const bind = new Map<number, PlanRow>();
         for (const r of rows) {                     // 진도표 순서대로, 그날 아직 안 쓴 같은 과목 칸 중 앞의 것에
-          const k = slots.findIndex(([, subj], i) => !used.has(i) && subj === r.subject);
+          const k = slots.findIndex(([, subj], i) => !used.has(i) && canon(subj) === canon(r.subject));
           if (k >= 0) { bind.set(k, r); used.add(k); } else r._unplaced = true;
         }
         slots.forEach(([p, subj], k) => {
@@ -291,6 +362,41 @@ export class PlanStore {
     return stats;
   }
 
+  /** 나이스 시간표로 plan_tt 를 고침. 받은 마지막 날까지만 바꿈(그 뒤는 아직 안 들어온 것). */
+  private replaceTt(rows: [string, number, string][], d1: string): { rows: number; changed: boolean; last?: string } {
+    if (!rows.length) return { rows: 0, changed: false };
+    const last = rows[rows.length - 1][0];
+    const old = this.sql.exec<{ tt_date: string; period: number; subject: string }>(
+      "SELECT tt_date, period, subject FROM plan_tt WHERE tt_date BETWEEN ? AND ?", d1, last).toArray();
+    const key = (d: string, p: number, sj: string) => `${d}|${p}|${sj}`;
+    const a = new Set(old.map((r) => key(r.tt_date, r.period, r.subject))), b = new Set(rows.map(([d, p, sj]) => key(d, p, sj)));
+    const changed = a.size !== b.size || [...b].some((x) => !a.has(x));
+    if (changed) {
+      this.sql.exec("DELETE FROM plan_tt WHERE tt_date BETWEEN ? AND ?", d1, last);
+      for (const [d, p, sj] of rows) this.sql.exec("INSERT OR REPLACE INTO plan_tt (tt_date, period, subject) VALUES (?, ?, ?)", d, p, sj);
+    }
+    return { rows: rows.length, changed, last };
+  }
+
+  /**
+   * 나이스에서 시간표를 받아 학기 진도에 반영. termId 를 주면 그 학기만, 아니면 오늘 이후로 끝나는 학기 모두.
+   * 바뀐 게 있거나 force 면 진도를 다시 맞춤(손으로 고친 조정은 다시 적용).
+   */
+  async syncNeis(cfg: NeisCfg, k: { grade: number; class: number }, today: string, opts: { termId?: number; force?: boolean } = {}) {
+    const terms = opts.termId ? [this.getTerm(opts.termId)].filter((t): t is Term => !!t)
+      : this.sql.exec<Term>("SELECT * FROM plan_term WHERE last_date >= ? ORDER BY first_date", today).toArray() as Term[];
+    if (!terms.length) throw new PlanError(404, "no_term", "진행 중인 학기 진도표가 없습니다. 연간지도계획(엑셀)을 먼저 올려 주세요");
+    const out = [];
+    for (const t of terms) {
+      const rows = await neisTimetable(cfg, k.grade, k.class, t.first_date, t.last_date);
+      const r = this.replaceTt(rows, t.first_date);
+      if (r.rows) this.sql.exec("UPDATE plan_term SET tt_synced_at = ?, tt_source = 'api' WHERE id = ?", Date.now(), t.id);
+      const stats = r.changed || opts.force ? await this.rebuild(this.getTerm(t.id)!) : null;
+      out.push({ term: t.term_key, ...r, ...(stats ?? {}) });
+    }
+    return out;
+  }
+
   terms() {
     const rows = this.sql.exec<Term & { hours: number }>(
       "SELECT t.*, (SELECT COUNT(*) FROM plan_slot s WHERE s.term_id = t.id) AS hours FROM plan_term t ORDER BY first_date DESC").toArray();
@@ -306,7 +412,7 @@ export class PlanStore {
       repeat: !!le.is_repeat, ph: !!le.placeholder, media: counts.get(le.lkey) ?? 0 };
   }
 
-  week(day: string, today: string) {
+  week(day: string, today: string, neisOn = false) {
     const d = DATE_RE.test(day) ? day : today;
     const mon = mondayOf(d), fri = addDays(mon, 4);
     const term = this.termFor(d) ?? ((this.sql.exec<Term>("SELECT * FROM plan_term WHERE first_date <= ? AND last_date >= ? ORDER BY id DESC LIMIT 1", fri, mon).toArray()[0] as Term | undefined) ?? null);
@@ -315,7 +421,7 @@ export class PlanStore {
       const terms = this.sql.exec<{ first_date: string }>("SELECT first_date FROM plan_term").toArray();
       const dist = (x: string) => Math.abs(Date.parse(x) - Date.parse(d));
       const nearest = terms.sort((a, b) => dist(a.first_date) - dist(b.first_date))[0];
-      return { ...base, term: null, nearest: nearest ? nearest.first_date : null, neis: false };
+      return { ...base, term: null, nearest: nearest ? nearest.first_date : null, neis: neisOn };
     }
     const { slots, assign, left } = this.assignment(term.id);
     const wk = slots.filter((s) => mon <= s.slot_date && s.slot_date <= fri);
@@ -323,8 +429,9 @@ export class PlanStore {
     const skipped = this.sql.exec<Lesson>("SELECT * FROM plan_lesson WHERE term_id = ? AND skipped = 1 ORDER BY subject, seq", term.id).toArray() as Lesson[];
     const subjects = [...new Set(slots.flatMap((s) => [s.orig_subject, s.subject]))].sort();
     return {
-      ...base, neis: false, subjects,
-      term: { id: term.id, key: term.term_key, first: term.first_date, last: term.last_date, tt_source: term.tt_source, synced: "" },
+      ...base, neis: neisOn, subjects,
+      term: { id: term.id, key: term.term_key, first: term.first_date, last: term.last_date, tt_source: term.tt_source,
+        synced: term.tt_synced_at ? new Date(Number(term.tt_synced_at) + 9 * 3600e3).toISOString().slice(5, 16).replace("-", "/").replace("T", " ") : "" },
       slots: wk.map((s) => ({ id: s.id, date: s.slot_date, period: s.period, subject: s.subject, short: shortSubject(s.subject), orig: s.orig_subject,
         cancelled: !!s.cancelled, note: s.note, lesson: s.cancelled ? null : this.lessonOut(assign.get(s.id), counts) })),
       left: [...left.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([subject, v]) => ({ subject, count: v.length, first: lessonLabel(v[0]) })),

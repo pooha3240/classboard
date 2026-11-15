@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>교시·시간표 설정</title>
-<link rel="stylesheet" href="css/board.css?v=0.8.0">
-<link rel="stylesheet" href="css/pages.css?v=0.8.0">
+<link rel="stylesheet" href="css/board.css?v=0.9.0">
+<link rel="stylesheet" href="css/pages.css?v=0.9.0">
 </head>
 <body class="page-body" data-login="login.html">
   <header class="page-top">
@@ -39,6 +39,19 @@
       <p class="muted small">나이스 '교육과정 연간지도계획'(엑셀)과 '학기별 시간표 조회'(PDF)를 올리면 날짜·교시마다 과목과 차시가 칠판에 붙고, 차시마다 자료를 미리 붙여 둘 수 있습니다. 진도표가 있으면 아래 학급 시간표보다 진도표를 먼저 씁니다.</p>
       <div class="row-end"><span></span><a class="chip primary" href="plan.html">주간 진도·차시 자료 열기 ›</a></div>
     </section>
+    <section class="panel" id="neis-panel">
+      <h2>나이스 시간표 자동 받기 <span class="muted small">(선택)</span></h2>
+      <p class="muted small">나이스 교육정보 개방 포털의 인증키를 넣으면 매일 새벽 학교 시간표(교체·행사 반영)를 받아 진도표에 맞춥니다. 넣지 않아도 진도표와 시간표 PDF 로 다 쓸 수 있습니다.</p>
+      <div id="neis-status" class="small"></div>
+      <div id="neis-form" class="neis-form">
+        <label>인증키 <input type="password" id="neis-key" autocomplete="off" placeholder="나이스 교육정보 개방 포털 → 인증키 신청"></label>
+        <label>학교 <input type="text" id="neis-q" placeholder="학교 이름(예: 언양초)"> <button type="button" class="chip" id="neis-find">찾기</button></label>
+        <div id="neis-schools" class="neis-schools"></div>
+        <div class="row-end"><span class="muted small" id="neis-picked"></span>
+          <button type="button" class="chip primary" id="neis-save" disabled>저장하고 지금 받기</button></div>
+      </div>
+      <p class="muted small">인증키 받기: <a href="https://open.neis.go.kr" target="_blank" rel="noopener">open.neis.go.kr</a> 가입 → 마이페이지 → 인증키 신청(활용 용도는 '학급 수업 시간표'). 인증키는 이 칠판 서버에만 저장되고 화면에는 끝 4자리만 보입니다.</p>
+    </section>
     <section class="panel">
       <h2>학급 시간표 <span id="tt-class" class="muted small"></span></h2>
       <p class="muted small">과목을 적어 두면 칠판 위쪽과 판서 기록에 과목이 자동으로 붙습니다(선택).</p>
@@ -52,6 +65,6 @@
     </section>
   </main>
   <div id="toast" role="status" aria-live="polite"></div>
-  <script type="module" src="js/settings.js?v=0.8.0"></script>
+  <script type="module" src="js/settings.js?v=0.9.0"></script>
 </body>
 </html>

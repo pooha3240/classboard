@@ -100,6 +100,60 @@ async function checkVersion() {
 }
 checkVersion();
 
+// ── 나이스 시간표 자동 받기(선택) ──
+let neisPick = null;
+const fmtAt = (t) => new Date(t).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+async function loadNeis() {
+  let j;
+  try { j = await api('/settings/neis'); } catch (e) { $('#neis-status').textContent = e.message; return; }
+  const st = $('#neis-status');
+  if (!j.on) { st.innerHTML = '<span class="muted">꺼져 있음</span>'; $('#neis-key').placeholder = '나이스 교육정보 개방 포털 → 인증키 신청'; return; }
+  const last = j.last ? (j.last.ok ? `마지막으로 받은 때 ${fmtAt(j.last.at)} (${j.last.rows}시간${j.last.changed ? ', 바뀐 것 반영' : ''})`
+    : `<span class="warn">마지막 시도 ${fmtAt(j.last.at)} 실패: ${esc(j.last.error)}</span>`) : '아직 받지 않음';
+  st.innerHTML = `<b>켜짐</b> · ${esc(j.school_name || j.school)} · 인증키 ${esc(j.key_hint)}<br><span class="muted">${last}${j.next ? ` · 다음 ${fmtAt(j.next)}` : ''}</span>
+    <div class="row-end"><span></span><button type="button" class="chip" id="neis-off">끄기</button></div>`;
+  $('#neis-key').placeholder = '바꿀 때만 넣으세요(비워 두면 지금 키 그대로)';
+  $('#neis-q').value = j.school_name || '';
+  neisPick = { office: j.office, school: j.school, name: j.school_name, kind: j.kind };
+  $('#neis-picked').textContent = j.school_name ? `선택: ${j.school_name}` : '';
+  $('#neis-save').disabled = false;
+  $('#neis-off').onclick = async () => {
+    if (!confirm('나이스 시간표 자동 받기를 끌까요? (이미 받은 시간표는 그대로 남습니다)')) return;
+    try { await api('/settings/neis', { method: 'DELETE' }); toast('껐습니다'); $('#neis-key').value = ''; loadNeis(); } catch (e) { toast(e.message); }
+  };
+}
+$('#neis-find').onclick = async () => {
+  const q = $('#neis-q').value.trim();
+  const box = $('#neis-schools');
+  if (q.length < 2) { toast('학교 이름을 두 글자 이상 넣으세요'); return; }
+  box.innerHTML = '<span class="muted small">찾는 중…</span>';
+  try {
+    const j = await api(`/settings/neis/schools?name=${encodeURIComponent(q)}&key=${encodeURIComponent($('#neis-key').value.trim())}`);
+    if (!j.schools.length) { box.innerHTML = '<span class="muted small">찾지 못했습니다. 정식 이름(예: 언양초등학교)으로 다시 찾아 보세요</span>'; return; }
+    box.innerHTML = j.schools.map((x, i) => `<button type="button" class="chip" data-i="${i}">${esc(x.name)} <span class="muted small">${esc(x.office_name)} · ${esc(x.address.split(' ').slice(0, 3).join(' '))}</span></button>`).join('');
+    box.querySelectorAll('[data-i]').forEach((b) => { b.onclick = () => {
+      const x = j.schools[+b.dataset.i];
+      neisPick = { office: x.office, school: x.school, name: x.name, kind: x.kind };
+      $('#neis-picked').textContent = `선택: ${x.name}`; box.innerHTML = ''; $('#neis-save').disabled = false;
+    }; });
+  } catch (e) { box.innerHTML = `<span class="warn small">${esc(e.message)}</span>`; }
+};
+$('#neis-q').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('#neis-find').click(); } });
+$('#neis-save').onclick = async () => {
+  if (!neisPick) { toast('학교를 찾아서 고르세요'); return; }
+  const b = $('#neis-save'); b.disabled = true; b.textContent = '확인하는 중…';
+  try {
+    const j = await api('/settings/neis', { method: 'PUT', body: JSON.stringify({ key: $('#neis-key').value.trim(), office: neisPick.office,
+      school: neisPick.school, school_name: neisPick.name, kind: neisPick.kind }) });
+    $('#neis-key').value = '';
+    const s = j.sync;
+    toast(Array.isArray(s) ? `저장했습니다. 나이스 시간표 ${s.reduce((n, r) => n + (r.rows || 0), 0)}시간을 받아 진도에 맞췄습니다`
+      : `저장했습니다.${s && s.error ? ' ' + s.error : ''}`);
+    loadNeis();
+  } catch (e) { toast(e.message); } finally { b.disabled = false; b.textContent = '저장하고 지금 받기'; }
+};
+loadNeis();
+
 (async () => {
   try {
     await loadBells();
