@@ -6,10 +6,10 @@
 <meta name="theme-color" content="#f4f4f1">
 <title>전자칠판</title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="css/board.css?v=0.2.1">
+<link rel="stylesheet" href="css/board.css?v=0.3.0">
 </head>
 <!-- data-v 는 서버 버전(src/room.ts SERVER_VERSION)과 같게 올립니다. 다르면 전자칠판이 스스로 새로 고칩니다. -->
-<body data-v="0.2.1">
+<body data-v="0.3.0">
 <script>/* 막대 위치를 먼저 정해 깜박임 방지(기본: 아래) */ try { if (localStorage.getItem('eboard.barBottom') !== 'false') document.body.classList.add('bar-bottom'); } catch (e) { document.body.classList.add('bar-bottom'); }</script>
   <header id="topbar">
     <button id="btn-class" class="chip" type="button"><span id="class-label">학급 선택</span></button>
@@ -39,6 +39,7 @@
           <button id="menu-penonly" type="button">펜 전용 (손가락은 이동·확대)</button>
           <button id="menu-pos" type="button">메뉴 막대 위·아래 바꾸기</button>
           <button id="menu-side" type="button">도구 막대 좌우 바꾸기</button>
+          <button id="menu-devices" type="button">등록된 전자칠판</button>
           <button id="menu-logout" type="button">로그아웃</button>
         </div>
       </div>
@@ -71,14 +72,14 @@
     <p class="muted">이 기기</p>
     <div id="picker-devices" class="chips"></div>
     <div id="picker-register" class="register" hidden>
-      <label class="check"><input type="checkbox" id="reg-on"> 이 기기를 전자칠판으로 등록 (로그인 없이 하루 종일 사용)</label>
+      <label class="check"><input type="checkbox" id="reg-on" checked> 이 기기를 전자칠판으로 등록 (로그인 없이 계속 사용, 교사 PIN 으로 잠금)</label>
       <div class="pin-fields">
         <label><span id="reg-pin-label">PIN</span>
           <input id="reg-pin" type="password" inputmode="numeric" pattern="\d*" maxlength="6" autocomplete="off"></label>
         <label>PIN 확인
           <input id="reg-pin2" type="password" inputmode="numeric" pattern="\d*" maxlength="6" autocomplete="off"></label>
       </div>
-      <p class="muted small">등록한 전자칠판은 학급이 고정되고, 학급 변경·등록 해제에 PIN 이 필요합니다.</p>
+      <p class="muted small">등록하면 이 기기에 교사 로그인을 남기지 않습니다. 지난 기록 열기·등록 해제에는 PIN 이 필요합니다.</p>
     </div>
     <p class="muted">학급</p>
     <div id="picker-classes" class="chips"></div>
@@ -86,14 +87,19 @@
 
   <dialog id="devmenu">
     <h2>전자칠판 설정</h2>
-    <p class="muted">이 전자칠판의 학급</p>
-    <div id="devmenu-classes" class="chips"></div>
+        <div id="devmenu-classes" class="chips"></div>
     <div class="row-end">
       <button id="devmenu-revoke" type="button" class="chip danger">이 기기 등록 해제</button>
       <button id="devmenu-close" type="button" class="chip">닫기</button>
     </div>
   </dialog>
 
-  <script type="module" src="js/app.js?v=0.2.1"></script>
+  <dialog id="devlist">
+    <h2>등록된 전자칠판</h2>
+    <div id="devlist-items"></div>
+    <div class="row-end"><button id="devlist-close" type="button" class="chip">닫기</button></div>
+  </dialog>
+
+  <script type="module" src="js/app.js?v=0.3.0"></script>
 </body>
 </html>

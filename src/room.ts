@@ -13,22 +13,28 @@
  *   "ping" → "pong" 은 자동 응답(DO를 깨우지 않음)
  */
 import { DurableObject } from "cloudflare:workers";
-import { sign, verify, TokenError, randomKey, hashPassword, checkPassword, type TokenPayload } from "./lib/token";
+import { sign, verify, TokenError, randomKey, hashPassword, checkPassword, sha256, type TokenPayload } from "./lib/token";
 import { currentPeriod, kstNow, nextBoundary, periodLabel, type Bell } from "./lib/periods";
 import {
   OpError, ID_RE, KINDS, BG_TYPES, MAX_LIVE_POINTS, MAX_OPS_PER_BATCH,
   validateObj, cleanWebUrl, cleanColor, num, type Obj,
 } from "./lib/validate";
 
-export const SERVER_VERSION = "0.2.1";
+export const SERVER_VERSION = "0.3.0";
 
 const TEACHER_DEVICES = new Set(["display", "teacher-pc", "teacher-tablet"]);
 const TOKEN_DAYS = 30;
+const DEVICE_TOKEN_HOURS = 12;        // 등록 전자칠판: 기기 키로 12시간짜리 토큰을 계속 새로 받음
+const PIN_TTL_S = 10 * 60;            // PIN 을 풀면 10분 동안 교사 권한
+const PIN_MAX_FAILS = 5;
+const PIN_LOCK_MS = 5 * 60_000;
+const PIN_RE = /^\d{4,6}$/;
 const SNAP_EVERY_OPS = 50;
 const SNAP_IDLE_MS = 15_000;
 
 interface Att {
   id: string;
+  dev?: number;                       // 등록 전자칠판이면 기기 번호
   sub: string;
   name: string;
   role: "teacher" | "student";
@@ -98,6 +104,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
   private sql: SqlStorage;
   private pages = new Map<number, PageState>();
   private loginFails = { n: 0, until: 0 };
+  private pinFails = new Map<number, { n: number; until: number }>();
 
   constructor(ctx: DurableObjectState, env: Record<string, unknown>) {
     super(ctx, env);
@@ -128,6 +135,9 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
         id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
         config TEXT, result TEXT NOT NULL, created_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS bells (period INTEGER PRIMARY KEY, start TEXT NOT NULL, end_ TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS devices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, key_hash TEXT NOT NULL UNIQUE, label TEXT NOT NULL,
+        created_at INTEGER NOT NULL, last_seen INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS grants (
         id INTEGER PRIMARY KEY AUTOINCREMENT, num INTEGER NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL,
         expires INTEGER NOT NULL, done INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
@@ -170,6 +180,32 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
   private checkStudentCode(p: TokenPayload): TokenPayload {
     if (p.role === "student" && (this.classCode(), p.cv) !== Number(this.cfg("code_ver") || 0)) throw new TokenError("code_changed");
     return p;
+  }
+
+  /* ───────────── 전자칠판 등록·PIN ───────────── */
+
+  private device(id: number | null | undefined): { id: number; label: string; created_at: number; last_seen: number } | null {
+    if (!id) return null;
+    return this.sql.exec<{ id: number; label: string; created_at: number; last_seen: number }>(
+      "SELECT id, label, created_at, last_seen FROM devices WHERE id = ?", id).toArray()[0] ?? null;
+  }
+  private devPublic(d: { id: number; label: string }) {
+    const k = this.klass();
+    return { id: d.id, label: d.label, grade: k.grade, class: k.class };
+  }
+  private async deviceToken(d: { id: number; label: string }, pinUntil?: number) {
+    const k = this.klass();
+    return this.tokenFor({ sub: this.cfg("login_id")!, name: d.label, role: "teacher", dev: d.id, lg: k.grade, lc: k.class,
+      ...(pinUntil ? { pin: pinUntil } : {}) }, DEVICE_TOKEN_HOURS / 24);
+  }
+  /** 로그인한 교사 기기는 늘 교사 권한, 등록 전자칠판은 PIN 을 푼 10분 동안만. */
+  private elevated(u: TokenPayload): boolean {
+    return !u.dev || (!!u.pin && u.pin > Date.now() / 1000);
+  }
+  private closeDeviceSockets(id: number): void {
+    for (const ws of this.ctx.getWebSockets()) {
+      if (this.att(ws)?.dev === id) { try { ws.send(JSON.stringify({ e: "auth-error", d: { error: "device_revoked" } })); ws.close(4001, "device_revoked"); } catch { /* 이미 닫힘 */ } }
+    }
   }
 
   /* ───────────── 학급 코드 ───────────── */
@@ -237,7 +273,13 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       const pw = String(b.password ?? "");
       if (!/^[A-Za-z0-9_.-]{3,30}$/.test(loginId)) return fail(400, "bad_login_id", "아이디는 영문·숫자 3~30자입니다");
       if (pw.length < 8) return fail(400, "bad_password", "비밀번호는 8자 이상입니다");
-      if (!reset) {
+      if (reset) {
+        // 비밀번호를 잊었거나 계정이 새었을 때: 모든 기기(교사·전자칠판·학생)를 다시 로그인하게 합니다.
+        this.setCfg("secret", randomKey());
+        this.sql.exec("DELETE FROM devices");
+        this.setCfg("pin_hash", null);
+        for (const ws of this.ctx.getWebSockets()) { try { ws.close(4001, "reset"); } catch { /* 이미 닫힘 */ } }
+      } else {
         let grade: number, cls: number, size: number;
         try { grade = num(b.grade, 1, 6); cls = num(b.class, 1, 30); size = num(b.size, 1, 60); }
         catch { return fail(400, "bad_class", "학년(1~6)·반(1~30)·인원(1~60)을 확인하세요"); }
@@ -284,15 +326,98 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       return json({ ...t, role: "student", num: n, grade: k.grade, class: k.class });
     }
 
+    if (path === "/auth/device/token" && method === "POST") {
+      if (!this.configured()) return fail(409, "not_configured", "아직 설치 설정을 하지 않았습니다");
+      const key = String((await body()).key ?? "");
+      const row = key.length >= 20 && key.length <= 100 ? this.sql.exec<{ id: number; label: string; last_seen: number }>(
+        "SELECT id, label, last_seen FROM devices WHERE key_hash = ?", await sha256(key)).toArray()[0] : undefined;
+      if (!row) return fail(401, "device_revoked", "등록이 해제되었거나 만료된 기기입니다");
+      if (Date.now() - row.last_seen > 3600e3) this.sql.exec("UPDATE devices SET last_seen = ? WHERE id = ?", Date.now(), row.id);
+      return json({ ...(await this.deviceToken(row)), device: this.devPublic(row) });
+    }
+
     const u = await this.user(req);
     if (!u) return fail(401, "not_logged_in", "로그인이 필요합니다");
+    if (u.dev && !this.device(u.dev)) return fail(401, "device_revoked", "등록이 해제된 기기입니다");
     const teacher = u.role === "teacher";
     if (!teacher) return fail(403, "forbidden", "교사만 사용할 수 있습니다");
     const k = this.klass();
 
     if (path === "/me" && method === "GET") return json({ me: u, klass: k });
-    if (path === "/classes" && method === "GET") return json({ school: 1, classes: [{ grade: k.grade, class: k.class }] });
-    if (path === "/auth/pin-status" && method === "GET") return json({ has_pin: false });
+    const elev = this.elevated(u);
+    const needPin = () => fail(403, "pin_required", "PIN 이 필요합니다");
+    const loggedIn = () => fail(403, "forbidden", "교사 로그인이 필요합니다");
+
+    if (path === "/classes" && method === "GET") {
+      if (!elev) return needPin();
+      return json({ school: 1, classes: [{ grade: k.grade, class: k.class }] });
+    }
+    if (path === "/auth/pin-status" && method === "GET") {
+      if (u.dev) return loggedIn();
+      return json({ has_pin: !!this.cfg("pin_hash") });
+    }
+    if (path === "/auth/device" && method === "POST") {
+      // 교사가 로그인한 기기에서: 이 기기를 전자칠판으로 등록(기기 키를 받음)
+      if (u.dev) return loggedIn();
+      const b = await body();
+      const pin = b.pin == null || b.pin === "" ? null : String(b.pin);
+      if (pin !== null && !PIN_RE.test(pin)) return fail(400, "bad_pin", "PIN 은 숫자 4~6자리입니다");
+      if (pin) this.setCfg("pin_hash", await hashPassword(pin));
+      else if (!this.cfg("pin_hash")) return fail(400, "pin_required", "처음 등록할 때는 PIN 을 정해야 합니다");
+      const n = this.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM devices").one().n;
+      if (n >= 20) return fail(400, "too_many", "등록된 전자칠판이 너무 많습니다. 쓰지 않는 기기를 해제하세요");
+      const key = randomKey(32);
+      const label = `전자칠판 ${k.grade}-${k.class}`;
+      const id = this.sql.exec<{ id: number }>("INSERT INTO devices (key_hash, label, created_at, last_seen) VALUES (?, ?, ?, ?) RETURNING id",
+        await sha256(key), label, Date.now(), Date.now()).one().id;
+      const d = { id, label };
+      return json({ key, device: this.devPublic(d), ...(await this.deviceToken(d)) });
+    }
+    if (path === "/auth/pin" && method === "POST") {
+      // 등록 전자칠판에서 PIN 을 넣으면 10분 동안 교사 권한 토큰
+      if (!u.dev) return fail(400, "not_device", "등록된 전자칠판에서만 사용합니다");
+      const d = this.device(u.dev)!;
+      const f = this.pinFails.get(d.id) ?? { n: 0, until: 0 };
+      if (Date.now() < f.until) return fail(429, "pin_locked", `PIN 을 여러 번 틀렸습니다. ${Math.ceil((f.until - Date.now()) / 60_000)}분 뒤에 다시 시도하세요`);
+      const pin = String((await body()).pin ?? "");
+      const ok = PIN_RE.test(pin) && !!this.cfg("pin_hash") && await checkPassword(pin, this.cfg("pin_hash")!);
+      if (!ok) {
+        f.n++;
+        this.pinFails.set(d.id, f.n >= PIN_MAX_FAILS ? { n: 0, until: Date.now() + PIN_LOCK_MS } : f);
+        return fail(403, "pin_wrong", "PIN 이 맞지 않습니다");
+      }
+      this.pinFails.delete(d.id);
+      const until = Math.floor(Date.now() / 1000) + PIN_TTL_S;
+      return json({ ...(await this.deviceToken(d, until)), pin_until: until });
+    }
+    if (path === "/auth/device" && method === "PATCH") {
+      // 학급이 하나뿐이라 옮길 곳이 없습니다(같은 학급으로 다시 고르면 그대로).
+      if (!u.dev || !elev) return needPin();
+      const d = this.device(u.dev)!;
+      return json({ ...(await this.deviceToken(d, u.pin ?? undefined)), device: this.devPublic(d) });
+    }
+    if (path === "/auth/device" && method === "DELETE") {
+      if (!u.dev || !elev) return needPin();
+      this.sql.exec("DELETE FROM devices WHERE id = ?", u.dev);
+      return json({ ok: true });
+    }
+    if (path === "/auth/devices" && method === "GET") {
+      if (u.dev) return loggedIn();
+      const kst = (t: number) => new Date(t + 9 * 3600e3).toISOString().slice(0, 16).replace("T", " ");
+      const devices = this.sql.exec<{ id: number; label: string; created_at: number; last_seen: number }>(
+        "SELECT id, label, created_at, last_seen FROM devices ORDER BY id").toArray()
+        .map((r) => ({ id: r.id, label: r.label, created_at: kst(r.created_at), last_seen: kst(r.last_seen) }));
+      return json({ devices });
+    }
+    const devDel = /^\/auth\/devices\/(\d+)$/.exec(path);
+    if (devDel && method === "DELETE") {
+      if (u.dev) return loggedIn();
+      const id = Number(devDel[1]);
+      if (!this.device(id)) return fail(404, "not_found", "기기를 찾을 수 없습니다");
+      this.sql.exec("DELETE FROM devices WHERE id = ?", id);
+      this.closeDeviceSockets(id);
+      return json({ ok: true });
+    }
     if (path === "/class-code" && method === "GET") return json({ code: this.classCode() });
     if (path === "/class-code/rotate" && method === "POST") {
       // 코드를 바꾸면 지금 접속한 학생과 진행 중인 호출이 모두 끝납니다(옛 QR·토큰으로는 못 들어옴).
@@ -328,6 +453,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
     }
     const del = /^\/arrangements\/(\d+)$/.exec(path);
     if (del && method === "DELETE") {
+      if (!elev) return needPin();
       this.sql.exec("DELETE FROM arrangements WHERE id = ?", Number(del[1]));
       return json({ ok: true });
     }
@@ -354,13 +480,17 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       catch (e) { error = e instanceof TokenError ? (e.message === "expired" ? "not_logged_in" : e.message) : "bad_token"; }
     }
     if (user && !(user.role === "teacher" ? TEACHER_DEVICES.has(device) : device === "student")) error = "bad_device";
+    if (user?.dev && !error) {
+      if (device !== "display") error = "bad_device";              // 등록 기기 토큰은 전자칠판으로만
+      else if (!this.device(user.dev)) error = "device_revoked";   // 해제된 기기는 남은 토큰으로도 못 들어옴
+    }
 
     if (error || !user) {
       server.send(JSON.stringify({ e: "auth-error", d: { error } }));
       server.close(4001, error ?? "auth");
       return new Response(null, { status: 101, webSocket: client });
     }
-    const att: Att = { id: randomKey(6), sub: user.sub, name: user.name ?? "", role: user.role, device, joined: false,
+    const att: Att = { id: randomKey(6), ...(user.dev ? { dev: user.dev } : {}), sub: user.sub, name: user.name ?? "", role: user.role, device, joined: false,
       ...(user.role === "student" ? { num: user.num ?? 0, grant: null } : {}) };
     server.serializeAttachment(att);
     server.send(JSON.stringify({ e: "hello", d: { me: user, device, server_version: SERVER_VERSION, server_ms: Date.now(),
@@ -753,6 +883,12 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
 
       case "session:open": {
         this.requireTeacherInRoom(a);
+        if (a.dev) {
+          // 등록 전자칠판은 PIN 으로 받은 토큰을 함께 보내야 지난 기록을 엽니다
+          let e: TokenPayload | null = null;
+          try { e = await verify(this.cfg("secret")!, d.elev_token as string); } catch { e = null; }
+          if (!e || e.dev !== a.dev || !this.elevated(e)) return { ok: false, error: "pin_required" };
+        }
         const s = this.getSession(Number(d.session_id));
         if (!s) return { ok: false, error: "bad_session" };
         this.switchTo(s.id as number);

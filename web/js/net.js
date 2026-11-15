@@ -115,6 +115,8 @@ export class Net extends EventTarget {
         const e = new Error(m.d && m.d.error);
         e.code = m.d && m.d.error;
         const who = this.device === 'student' ? 'student' : 'teacher';
+        // 등록 전자칠판: 토큰이 낡았으면 기기 키로 새로 받으면 됨(다시 연결). 기기가 해제됐으면 그때 device_revoked 가 옴.
+        if (this.deviceKey && ['not_logged_in', 'bad_signature', 'expired'].includes(e.code)) { ws.close(); return; }
         if (['not_logged_in', 'bad_signature', 'expired', 'code_changed'].includes(e.code)) { clearToken(who); if (e.code !== 'code_changed') e.code = 'not_logged_in'; }
         this._stopped = true;
         this._emit('auth-error', e);

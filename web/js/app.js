@@ -509,7 +509,7 @@ async function openPicker() {
   const dlg = $('#picker');
   const devBox = $('#picker-devices'), clsBox = $('#picker-classes'), reg = $('#picker-register');
   devBox.innerHTML = ''; clsBox.innerHTML = '<p class="muted">학급 목록을 불러오는 중…</p>';
-  const showReg = () => { reg.hidden = true; };   // 전자칠판 등록·PIN 은 다음 단계에서
+  const showReg = () => { reg.hidden = device !== 'display'; };
   for (const [k, label] of Object.entries(DEVICE_LABEL)) {
     const b = document.createElement('button');
     b.textContent = label; b.className = 'chip' + (device === k ? ' on' : '');
@@ -543,6 +543,7 @@ async function pickClass(c, teacherToken) {
         method: 'POST', body: JSON.stringify({ grade: c.grade, class: c.class, ...(pin ? { pin } : {}) }),
       });
       store.set('deviceKey', r.key); store.set('device', 'display'); store.set('class', { grade: c.grade, class: c.class });
+      clearToken('teacher');            // 교실 기기에 30일짜리 교사 로그인을 남기지 않음(이제 기기 키로 동작)
       toast('전자칠판으로 등록했습니다');
       setTimeout(() => location.reload(), 600);
     } catch (e) { toast('등록하지 못했습니다: ' + e.message, 3500); }
@@ -565,19 +566,12 @@ async function openDeviceMenu() {
   try {
     elev = await api('/auth/pin', net.lastToken || await net.token(), { method: 'POST', body: JSON.stringify({ pin }) });
   } catch (e) { toast(e.message, 3000); return; }
+  sessionStorage.setItem('eboard.elev', JSON.stringify({ token: elev.token, exp: elev.pin_until }));
   const dlg = $('#devmenu'), box = $('#devmenu-classes');
-  box.innerHTML = '<p class="muted">학급 목록을 불러오는 중…</p>';
+  const k = net.deviceInfo || klass || {};
+  box.innerHTML = `<p><b>${k.grade}학년 ${k.class}반</b> 전자칠판으로 등록되어 있습니다.</p>
+    <p class="muted small">PIN 을 바꾸려면 교사 PC 에서 로그인해 전자칠판을 다시 등록하거나, 메뉴의 '등록된 전자칠판'에서 관리하세요.</p>`;
   dlg.showModal();
-  try {
-    const cls = await api('/classes', elev.token);
-    classButtons(box, cls.classes, async (c) => {
-      try {
-        await api('/auth/device', elev.token, { method: 'PATCH', body: JSON.stringify({ grade: c.grade, class: c.class }) });
-        store.set('class', { grade: c.grade, class: c.class });
-        location.reload();
-      } catch (e) { toast(e.message, 3000); }
-    });
-  } catch (e) { box.innerHTML = `<p class="muted">${e.message}</p>`; }
   $('#devmenu-revoke').onclick = async () => {
     if (!(await askConfirm('이 전자칠판의 등록을 해제할까요? 다시 쓰려면 교사 로그인이 필요합니다.', '등록 해제', { danger: true }))) return;
     try { await api('/auth/device', elev.token, { method: 'DELETE' }); } catch (e) { toast(e.message, 3000); return; }
@@ -627,6 +621,32 @@ $('#menu-penonly').addEventListener('click', () => {
 });
 $('#rollover-close').addEventListener('click', () => { $('#rollover').hidden = true; });
 $('#menu-logout').addEventListener('click', () => { clearToken(); location.replace('login.html'); });
+$('#menu-logout').hidden = !!deviceKey;          // 등록 전자칠판은 로그인이 없음(해제는 학급 버튼 → PIN)
+$('#menu-devices').hidden = !!deviceKey;
+$('#menu-devices').addEventListener('click', () => openDevices());
+
+// 로그인한 교사 기기: 등록된 전자칠판 목록과 해제(잃어버렸거나 바꿨을 때)
+async function openDevices() {
+  const dlg = $('#devlist'), box = $('#devlist-items');
+  box.innerHTML = '<p class="muted">불러오는 중…</p>';
+  if (!dlg.open) dlg.showModal();
+  let t;
+  try {
+    t = net.lastToken || await net.token();
+    const r = await api('/auth/devices', t);
+    if (!r.devices.length) { box.innerHTML = '<p class="muted">등록된 전자칠판이 없습니다. 전자칠판에서 로그인한 뒤 학급 버튼 → 전자칠판 → 등록하세요.</p>'; return; }
+    box.innerHTML = r.devices.map((d) => `<div class="dev-row"><div><b>${d.label}</b> <span class="muted small">#${d.id}</span><br>
+      <span class="muted small">등록 ${d.created_at} · 마지막 사용 ${d.last_seen}</span></div>
+      <button type="button" class="chip danger" data-id="${d.id}">해제</button></div>`).join('');
+    box.querySelectorAll('[data-id]').forEach((b) => {
+      b.onclick = async () => {
+        if (!(await askConfirm(`전자칠판 #${b.dataset.id} 의 등록을 해제할까요? 그 기기는 바로 칠판이 닫힙니다.`, '해제', { danger: true }))) return;
+        try { await api(`/auth/devices/${b.dataset.id}`, t, { method: 'DELETE' }); toast('해제했습니다'); openDevices(); } catch (e) { toast(e.message, 3000); }
+      };
+    });
+  } catch (e) { box.innerHTML = `<p class="muted">불러오지 못했습니다 (${e.message})</p>`; }
+}
+$('#devlist-close').addEventListener('click', () => $('#devlist').close());
 setInterval(() => { if (board.page && (!snapSeq.has(board.page.id) || board.seq > snapSeq.get(board.page.id))) snapshotCurrent(); }, 60000);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') snapshotCurrent(); });
 $('#btn-class').addEventListener('click', () => (deviceKey ? openDeviceMenu() : openPicker()));

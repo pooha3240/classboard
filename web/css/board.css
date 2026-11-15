@@ -131,6 +131,8 @@ dialog#devmenu { border: 0; border-radius: 16px; padding: 24px; width: min(560px
 dialog#devmenu::backdrop, dialog.pin-dialog::backdrop { background: rgba(20,20,18,.4); }
 dialog#devmenu h2 { margin: 0 0 8px; font-size: 20px; }
 .row-end { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.dev-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+#devlist { width: min(480px, 92vw); }
 .chip.danger { color: var(--bad); border-color: #f1c7c7; }
 .register { background: #f7f7f4; border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; }
 .register .check { display: flex; gap: 8px; align-items: center; font-weight: 600; }

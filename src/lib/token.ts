@@ -110,3 +110,9 @@ export async function checkPassword(password: string, stored: string): Promise<b
   for (let i = 0; i < got.length; i++) diff |= got[i] ^ want[i];
   return diff === 0;
 }
+
+/** 기기 키는 해시만 저장합니다(DB가 새어도 키를 알 수 없게). */
+export async function sha256(text: string): Promise<string> {
+  const h = await crypto.subtle.digest("SHA-256", enc.encode(text));
+  return [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
