@@ -51,7 +51,19 @@ export function makeGroups(students, { count, size, together = [], apart = [] })
 }
 
 // ── 자리 배치 ──
-export function makeSeating(students, { rows, cols, empty = [], fixed = {}, front = [], apart = [] }) {
+// 칠판에서 먼 줄의 끝자리부터 빈자리로(인원보다 자리가 많을 때)
+export function autoEmpty(rows, cols, count, deskTop = true) {
+  const extra = Math.max(0, rows * cols - count);
+  const out = [];
+  for (let i = 0; i < extra; i++) {
+    const line = Math.floor(i / cols), col = cols - 1 - (i % cols);   // 맨 뒷줄 오른쪽부터
+    const r = deskTop ? rows - 1 - line : line;
+    out.push(`${r}-${col}`);
+  }
+  return out;
+}
+
+export function makeSeating(students, { rows, cols, empty = [], fixed = {}, front = [], apart = [], deskTop = true }) {
   const cells = [];
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) if (!empty.includes(`${r}-${c}`)) cells.push(`${r}-${c}`);
   const fixedStu = new Set(Object.values(fixed));
@@ -61,9 +73,12 @@ export function makeSeating(students, { rows, cols, empty = [], fixed = {}, fron
   const near = (a, b) => { const [r1, c1] = a.split('-').map(Number), [r2, c2] = b.split('-').map(Number); return Math.abs(r1 - r2) + Math.abs(c1 - c2) === 1; };
   let best = null, bestBad = Infinity;
   for (let tries = 0; tries < 2000 && bestBad > 0; tries++) {
-    const order = free.slice().sort((a, b) => +a.split('-')[0] - +b.split('-')[0]);   // 앞줄부터
+    // 칠판에 가까운 줄부터(같은 줄 안은 무작위). 자리가 남으면 뒷줄이 비게 됩니다.
+    const dist = (k) => { const r = +k.split('-')[0]; return deskTop ? r : rows - 1 - r; };
+    const order = shuffle(free.slice()).sort((a, b) => dist(a) - dist(b));
+    const need = frontSet.size + rest.filter((s) => !frontSet.has(s)).length;
     const frontCells = order.slice(0, frontSet.size);
-    const others = shuffle(order.slice(frontSet.size));
+    const others = shuffle(order.slice(frontSet.size, need));
     const map = { ...fixed };
     const fc = shuffle(frontCells);
     shuffle([...frontSet]).forEach((s, i) => { map[fc[i]] = s; });
@@ -297,25 +312,32 @@ export class ClassTools {
   _seatTab(body) {
     const cfg = ls.get(`seatcfg.${this.key}`, { rows: 5, cols: 6, empty: [], front: [], apart: [], fixed: {}, deskTop: true });
     const save = () => ls.set(`seatcfg.${this.key}`, cfg);
+    // 빈자리는 인원수에 맞춰 자동으로(뒷줄 끝부터). 칸을 직접 누르면 그때부터는 손으로 정한 대로.
+    const auto = () => { cfg.empty = autoEmpty(cfg.rows, cfg.cols, this.students.length, cfg.deskTop); cfg.autoEmpty = true; };
+    if (cfg.autoEmpty !== false && cfg.empty.length !== Math.max(0, cfg.rows * cfg.cols - this.students.length)) auto();
     const redraw = () => { save(); this.tab('seat'); };
     body.innerHTML = `
       <div class="ct-row"><label>줄 <input id="s-r" type="number" min="1" max="10" value="${cfg.rows}"></label>
         <label>칸 <input id="s-c" type="number" min="1" max="10" value="${cfg.cols}"></label>
-        <label class="check"><input type="checkbox" id="s-top" ${cfg.deskTop ? 'checked' : ''}> 교탁을 위에</label></div>
-      <p class="muted small">빈자리: 칸을 눌러 표시 (${cfg.rows * cfg.cols - cfg.empty.length}자리 / ${this.present().length}명)</p>
+        <label class="check"><input type="checkbox" id="s-top" ${cfg.deskTop ? 'checked' : ''}> 칠판을 위에</label></div>
+      <p class="muted small">빈자리: 칸을 눌러 바꿈 (${cfg.rows * cfg.cols - cfg.empty.length}자리 / ${this.students.length}명)${cfg.autoEmpty === false ? ' · <button type="button" class="linkish" id="s-auto">인원수에 맞추기</button>' : ''}</p>
+      ${cfg.deskTop ? '<div class="ct-desk sm">칠판</div>' : ''}
       <div class="ct-seatmap" style="grid-template-columns:repeat(${cfg.cols},1fr)">${Array.from({ length: cfg.rows * cfg.cols }, (_, i) => {
         const k = `${Math.floor(i / cfg.cols)}-${i % cfg.cols}`;
         return `<button type="button" data-k="${k}" class="${cfg.empty.includes(k) ? 'off' : ''}">${cfg.fixed[k] ? esc(this.nameOf(cfg.fixed[k])) : ''}</button>`;
       }).join('')}</div>
+      ${cfg.deskTop ? '' : '<div class="ct-desk sm">칠판</div>'}
       <button type="button" class="ct-big" id="s-go">자리 바꾸기</button>
       <h4>앞자리 (눈·키 등)</h4>
       <div class="ct-chips" id="s-front">${this.students.map((s) => `<button type="button" class="${cfg.front.includes(s.seat) ? 'on' : ''}" data-seat="${s.seat}">${esc(this.label(s))}</button>`).join('')}</div>`;
-    $('#s-r', body).onchange = (e) => { cfg.rows = Math.max(1, Math.min(10, +e.target.value)); cfg.empty = []; cfg.fixed = {}; redraw(); };
-    $('#s-c', body).onchange = (e) => { cfg.cols = Math.max(1, Math.min(10, +e.target.value)); cfg.empty = []; cfg.fixed = {}; redraw(); };
-    $('#s-top', body).onchange = (e) => { cfg.deskTop = e.target.checked; save(); };
+    $('#s-r', body).onchange = (e) => { cfg.rows = Math.max(1, Math.min(10, +e.target.value)); cfg.fixed = {}; auto(); redraw(); };
+    $('#s-c', body).onchange = (e) => { cfg.cols = Math.max(1, Math.min(10, +e.target.value)); cfg.fixed = {}; auto(); redraw(); };
+    $('#s-top', body).onchange = (e) => { cfg.deskTop = e.target.checked; if (cfg.autoEmpty !== false) auto(); redraw(); };
+    const sa = $('#s-auto', body); if (sa) sa.onclick = () => { auto(); redraw(); };
     body.querySelector('.ct-seatmap').onclick = (e) => {
       const k = e.target.dataset.k; if (!k) return;
       cfg.empty = cfg.empty.includes(k) ? cfg.empty.filter((x) => x !== k) : [...cfg.empty, k];
+      cfg.autoEmpty = false;
       delete cfg.fixed[k]; redraw();
     };
     $('#s-front', body).onclick = (e) => {
@@ -342,7 +364,7 @@ export class ClassTools {
     this.seating = JSON.parse(JSON.stringify(result));
     const draw = () => {
       const { rows, cols, empty, deskTop, seats } = this.seating;
-      const desk = `<div class="ct-desk">교탁</div>`;
+      const desk = `<div class="ct-desk">칠판</div>`;
       let cells = '';
       for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
         const k = `${r}-${c}`;
