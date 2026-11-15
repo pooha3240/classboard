@@ -2,7 +2,7 @@
 
 교사 개인의 Cloudflare 무료 계정에 직접 설치해서 쓰는 교실 전자칠판입니다. 설치 하나가 교사 한 명, 학급 하나입니다.
 
-> **지금은 개발 중입니다(기본판 0.6.0).** 판서·페이지·수업(교시) 기록·판서 기록 보기·교시 시각·시간표 설정·수학 도구·학급 도구(번호 뽑기 등)·학생 호출(칠판에 풀기)·전자칠판 등록·PIN·사진·PDF 자료가 동작합니다.
+> **지금은 개발 중입니다(기본판 0.7.0).** 판서·페이지·수업(교시) 기록·판서 기록 보기·교시 시각·시간표 설정·수학 도구·학급 도구(번호 뽑기 등)·학생 호출(칠판에 풀기)·전자칠판 등록·PIN·사진·PDF 자료가 동작합니다.
 
 ## 판 구성
 
@@ -26,17 +26,14 @@
 - 동영상·PDF를 서버에 올려 모든 기기에서 사용
 - 설치 조건: Docker가 도는 서버와, 외부 접속용 Cloudflare Tunnel 또는 공인 IP
 
-## 설치 (기본판, 개발 중)
+## 설치 (기본판)
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/pooha3240/classboard)
+**[설치 안내 보기 → docs/INSTALL.md](docs/INSTALL.md)**
 
-1. 위 버튼을 누르고 Cloudflare 계정으로 로그인합니다. GitHub 계정 연결을 요구하면 연결합니다(저장소가 내 계정에 복사됩니다).
-2. 배포 화면에서 **SETUP_KEY**(설치 키)를 넣습니다. 아무도 모르는 긴 문자열로 정하고 따로 적어 둡니다. 처음 설정과 비밀번호를 잊었을 때 씁니다.
-   - 버튼 대신 저장소를 직접 연결해 배포했다면: Cloudflare 대시보드 → Workers & Pages → classboard → Settings → Variables and Secrets → Add → 종류 **Secret**, 이름 `SETUP_KEY`.
-3. `https://classboard.<계정>.workers.dev` 를 열면 '처음 설정' 화면이 나옵니다. 설치 키, 학년·반·인원, 아이디·비밀번호를 넣습니다.
-4. 교사 PC·태블릿·전자칠판에서 같은 주소로 로그인하고, '이 기기' 종류를 고르면 칠판이 열립니다.
+- **GitHub 계정 없이 (Windows)**: [zip 파일](https://github.com/pooha3240/classboard/archive/refs/heads/main.zip)을 받아 압축을 풀고 `install-windows.bat` 을 실행합니다. Cloudflare 로그인·배포·설치 키 만들기까지 도우미가 합니다.
+- **GitHub 계정으로**: 이 저장소를 Fork 한 뒤 Cloudflare 의 Workers & Pages → Import a repository 로 연결하고, Secret `SETUP_KEY` 를 넣습니다. 업데이트는 Sync fork 한 번입니다.
 
-GitHub 계정 없이 설치하는 '설치 도우미'는 기본판 정식판과 함께 나옵니다.
+설치 뒤 주소를 열어 처음 설정(학급·교사 계정) → 교시 시각 → 전자칠판 등록 순서로 하면 됩니다.
 
 다른 기기의 판서는 Cloudflare 경로에 따라 0.3초 정도 늦게 보일 수 있습니다. 내가 그리는 판서는 바로 그려집니다.
 

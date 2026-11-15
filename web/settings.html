@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>교시·시간표 설정</title>
-<link rel="stylesheet" href="css/board.css?v=0.6.0">
-<link rel="stylesheet" href="css/pages.css?v=0.6.0">
+<link rel="stylesheet" href="css/board.css?v=0.7.0">
+<link rel="stylesheet" href="css/pages.css?v=0.7.0">
 </head>
 <body class="page-body" data-login="login.html">
   <header class="page-top">
@@ -40,8 +40,13 @@
       <div style="overflow-x:auto"><table class="tt"><thead><tr><th>교시</th><th>월</th><th>화</th><th>수</th><th>목</th><th>금</th></tr></thead><tbody id="tt"></tbody></table></div>
       <div class="row-end"><span></span><button id="tt-save" type="button" class="chip primary">시간표 저장</button></div>
     </section>
+    <section class="panel">
+      <h2>버전</h2>
+      <p id="ver" class="small">확인하는 중…</p>
+      <p class="muted small">업데이트 방법: <a href="https://github.com/pooha3240/classboard/blob/main/docs/INSTALL.md#5-업데이트" target="_blank" rel="noopener">설치 안내 5. 업데이트</a> · 판서·자료·설정은 그대로 남습니다.</p>
+    </section>
   </main>
   <div id="toast" role="status" aria-live="polite"></div>
-  <script type="module" src="js/settings.js?v=0.6.0"></script>
+  <script type="module" src="js/settings.js?v=0.7.0"></script>
 </body>
 </html>

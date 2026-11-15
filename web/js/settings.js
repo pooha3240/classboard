@@ -88,6 +88,18 @@ $('#qf-go').onclick = () => {
   toast('채웠습니다. 확인한 뒤 저장을 누르세요');
 };
 
+// 지금 판과 최신 판(GitHub 의 package.json)
+async function checkVersion() {
+  const el = $('#ver');
+  let cur = '';
+  try { cur = (await (await fetch('/api/health', { cache: 'no-store' })).json()).version; } catch { /* 무시 */ }
+  let latest = '';
+  try { latest = (await (await fetch('https://raw.githubusercontent.com/pooha3240/classboard/main/package.json', { cache: 'no-store' })).json()).version; } catch { /* 무시 */ }
+  const newer = (a, b) => { const x = a.split('.').map(Number), y = b.split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
+  el.innerHTML = `지금 판: <b>${esc(cur || '?')}</b>` + (latest ? ` · 최신 판: <b>${esc(latest)}</b> ${newer(latest, cur) ? '<span class="tag-new">업데이트 있음</span>' : '(최신)'}` : ' · 최신 판을 확인하지 못했습니다');
+}
+checkVersion();
+
 (async () => {
   try {
     await loadBells();
