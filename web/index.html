@@ -6,10 +6,10 @@
 <meta name="theme-color" content="#f4f4f1">
 <title>전자칠판</title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="css/board.css?v=0.5.0">
+<link rel="stylesheet" href="css/board.css?v=0.6.0">
 </head>
 <!-- data-v 는 서버 버전(src/room.ts SERVER_VERSION)과 같게 올립니다. 다르면 전자칠판이 스스로 새로 고칩니다. -->
-<body data-v="0.5.0">
+<body data-v="0.6.0">
 <script>/* 막대 위치를 먼저 정해 깜박임 방지(기본: 아래) */ try { if (localStorage.getItem('eboard.barBottom') !== 'false') document.body.classList.add('bar-bottom'); } catch (e) { document.body.classList.add('bar-bottom'); }</script>
   <header id="topbar">
     <button id="btn-class" class="chip" type="button"><span id="class-label">학급 선택</span></button>
@@ -35,7 +35,7 @@
           <button id="menu-history" type="button">판서 기록</button>
           <button id="menu-roster" type="button" hidden>학급 명단 관리</button>
           <button id="menu-plan" type="button" hidden>주간 진도·차시 자료</button>
-          <button id="menu-settings" type="button" hidden>교시·시간표 설정</button>
+          <button id="menu-settings" type="button">교시·시간표 설정</button>
           <button id="menu-penonly" type="button">펜 전용 (손가락은 이동·확대)</button>
           <button id="menu-pos" type="button">메뉴 막대 위·아래 바꾸기</button>
           <button id="menu-side" type="button">도구 막대 좌우 바꾸기</button>
@@ -61,6 +61,12 @@
 
   <div id="update-banner" class="banner" hidden>
     새 버전이 나왔습니다. <button type="button" class="chip" id="update-reload">새로 고침</button>
+  </div>
+
+  <div id="bell-banner" class="banner" hidden>
+    교시 시각이 아직 기본값입니다. 학교 종 시각에 맞춰야 판서가 교시별로 바르게 기록됩니다.
+    <button type="button" class="chip" id="bell-banner-go">교시 시각 설정</button>
+    <button type="button" class="chip" id="bell-banner-x">나중에</button>
   </div>
 
   <div id="login-needed" class="banner" hidden>
@@ -100,6 +106,6 @@
     <div class="row-end"><button id="devlist-close" type="button" class="chip">닫기</button></div>
   </dialog>
 
-  <script type="module" src="js/app.js?v=0.5.0"></script>
+  <script type="module" src="js/app.js?v=0.6.0"></script>
 </body>
 </html>

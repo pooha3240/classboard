@@ -116,3 +116,8 @@ body.plan-body .pl-swap:not([hidden]) ~ .pl-grid .slot { cursor: crosshair; }
 .pl-neis { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 6px 0; }
 .pl-neis[hidden] { display: none; }
 .storage-line { padding: 8px 20px 24px; text-align: center; }
+.quickfill { margin: 8px 0 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: #fafaf7; }
+.quickfill summary { cursor: pointer; font-weight: 600; }
+.qf-grid { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin-top: 10px; }
+.qf-grid input[type=number] { width: 58px; }
+.tt th:first-child { white-space: nowrap; width: 3em; }

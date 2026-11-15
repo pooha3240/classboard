@@ -36,7 +36,7 @@ $('#bell-save').onclick = async () => {
   try {
     await api('/settings/bells', { method: 'PUT', body: JSON.stringify({ bells }) });
     toast('교시 시각을 저장했습니다');
-    loadBells();
+    await loadBells(); loadTimetable();
   } catch (e) { if (!needLogin(e)) toast(e.message); }
 };
 
@@ -49,7 +49,7 @@ async function loadBells() {
 }
 
 async function loadTimetable() {
-  const j = await api(`/settings/timetable?grade=${grade}&class=${cls}`);
+  const j = await api('/settings/timetable');
   const maxP = Math.max(6, ...bells.map((b) => b.period));
   const map = new Map(j.slots.map((s) => [`${s.weekday}-${s.period}`, s.subject]));
   let html = '';
@@ -69,21 +69,33 @@ $('#tt-save').onclick = async () => {
   } catch (e) { if (!needLogin(e)) toast(e.message); }
 };
 
+// 빠르게 채우기: 1교시 시작·수업 길이·쉬는 시간·점심
+const hm = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+$('#qf-go').onclick = () => {
+  const [h, m] = $('#qf-start').value.split(':').map(Number);
+  const len = +$('#qf-len').value, brk = +$('#qf-brk').value, n = Math.min(9, Math.max(1, +$('#qf-n').value));
+  const after = +$('#qf-lunch-after').value, lunch = +$('#qf-lunch').value;
+  if (!(len > 0) || Number.isNaN(h)) { toast('값을 확인하세요'); return; }
+  let t = h * 60 + m;
+  bells = [];
+  for (let p = 1; p <= n; p++) {
+    if (t + len > 24 * 60 - 1) break;
+    bells.push({ period: p, start: hm(t), end: hm(t + len) });
+    t += len + (p === after ? lunch : brk);
+  }
+  drawBells();
+  $('#qf').open = false;
+  toast('채웠습니다. 확인한 뒤 저장을 누르세요');
+};
+
 (async () => {
   try {
     await loadBells();
     try {
-      const c = await api('/classes');
-      const sel = $('#tt-class');
-      sel.innerHTML = c.classes.map((x) => `<option value="${x.grade}-${x.class}">${x.grade}학년 ${x.class}반</option>`).join('');
-      if (!grade && c.classes.length) { grade = c.classes[0].grade; cls = c.classes[0].class; }
-    if (grade && !c.classes.some((x) => x.grade === grade && x.class === cls)) {
-      sel.insertAdjacentHTML('afterbegin', `<option value="${grade}-${cls}">${grade}학년 ${cls}반</option>`);
-    }
-      sel.value = `${grade}-${cls}`;
-      sel.onchange = () => { [grade, cls] = sel.value.split('-').map(Number); loadTimetable(); $('#plan-link').href = `plan.php?grade=${grade}&class=${cls}`; };
-      $('#plan-link').href = `plan.php?grade=${grade}&class=${cls}`;
-    } catch { $('#tt-class').innerHTML = `<option>${grade}학년 ${cls}반</option>`; }
+      const me = await api('/me');
+      grade = me.klass.grade; cls = me.klass.class;
+      $('#tt-class').textContent = `${grade}학년 ${cls}반`;
+    } catch { /* 학급 표시 없이 */ }
     await loadTimetable();
   } catch (e) { if (!needLogin(e)) toast(e.message); }
 })();

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>교시·시간표 설정</title>
+<link rel="stylesheet" href="css/board.css?v=0.6.0">
+<link rel="stylesheet" href="css/pages.css?v=0.6.0">
+</head>
+<body class="page-body" data-login="login.html">
+  <header class="page-top">
+    <a class="chip" href="./">‹ 칠판</a>
+    <h1>교시·시간표 설정</h1>
+  </header>
+  <main class="settings">
+    <section class="panel">
+      <h2>교시 시각 <span id="bell-note" class="muted small"></span></h2>
+      <p class="muted small">우리 학교 종 시각을 넣으세요. 판서가 교시마다 따로 기록되고, 교시가 바뀌면 칠판이 새 수업으로 넘어갑니다. 쉬는 시간은 직전 교시로, 1교시 전은 '아침', 마지막 교시 15분 뒤부터는 '방과후'로 기록됩니다.</p>
+      <details class="quickfill" id="qf">
+        <summary>빠르게 채우기</summary>
+        <div class="qf-grid">
+          <label>1교시 시작 <input type="time" id="qf-start" value="09:00"></label>
+          <label>수업 <input type="number" id="qf-len" value="40" min="20" max="120">분</label>
+          <label>쉬는 시간 <input type="number" id="qf-brk" value="10" min="0" max="60">분</label>
+          <label>교시 수 <input type="number" id="qf-n" value="6" min="1" max="9"></label>
+          <label>점심: <input type="number" id="qf-lunch-after" value="4" min="0" max="9">교시 뒤 <input type="number" id="qf-lunch" value="50" min="0" max="120">분</label>
+          <button id="qf-go" type="button" class="chip">이대로 채우기</button>
+        </div>
+        <p class="muted small">채운 뒤 아래 표에서 다른 시각만 고쳐서 저장하세요.</p>
+      </details>
+      <table><thead><tr><th>교시</th><th>시작</th><th>끝</th><th></th></tr></thead><tbody id="bells"></tbody></table>
+      <div class="row-end">
+        <button id="bell-add" type="button" class="chip">＋ 교시 추가</button>
+        <button id="bell-save" type="button" class="chip primary">교시 시각 저장</button>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>학급 시간표 <span id="tt-class" class="muted small"></span></h2>
+      <p class="muted small">과목을 적어 두면 칠판 위쪽과 판서 기록에 과목이 자동으로 붙습니다(선택).</p>
+      <div style="overflow-x:auto"><table class="tt"><thead><tr><th>교시</th><th>월</th><th>화</th><th>수</th><th>목</th><th>금</th></tr></thead><tbody id="tt"></tbody></table></div>
+      <div class="row-end"><span></span><button id="tt-save" type="button" class="chip primary">시간표 저장</button></div>
+    </section>
+  </main>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="js/settings.js?v=0.6.0"></script>
+</body>
+</html>

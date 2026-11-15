@@ -15,13 +15,13 @@
 import { DurableObject } from "cloudflare:workers";
 import { MediaStore, MediaError, MAX_PDF_PAGES, imageMeta, pageSizeFor, sniffImage } from "./media";
 import { sign, verify, TokenError, randomKey, hashPassword, checkPassword, sha256, shortSig, type TokenPayload } from "./lib/token";
-import { currentPeriod, kstNow, nextBoundary, periodLabel, type Bell } from "./lib/periods";
+import { currentPeriod, kstNow, nextBoundary, periodLabel, normalize, type Bell } from "./lib/periods";
 import {
   OpError, ID_RE, KINDS, BG_TYPES, MAX_LIVE_POINTS, MAX_OPS_PER_BATCH,
   validateObj, cleanWebUrl, cleanColor, num, type Obj,
 } from "./lib/validate";
 
-export const SERVER_VERSION = "0.5.0";
+export const SERVER_VERSION = "0.6.0";
 
 const TEACHER_DEVICES = new Set(["display", "teacher-pc", "teacher-tablet"]);
 const TOKEN_DAYS = 30;
@@ -150,6 +150,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
         expires INTEGER NOT NULL, done INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
     `);
     this.media.migrate();
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS timetable (weekday INTEGER NOT NULL, period INTEGER NOT NULL, subject TEXT NOT NULL, PRIMARY KEY (weekday, period))`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS page_thumbs (page_id INTEGER PRIMARY KEY, seq INTEGER NOT NULL, data BLOB NOT NULL)`);
   }
 
@@ -478,6 +479,60 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       this.sql.exec("DELETE FROM arrangements WHERE id = ?", Number(del[1]));
       return json({ ok: true });
     }
+    /* 교시 시각·학급 시간표 */
+    if (path === "/settings/bells" && method === "GET") {
+      const rows = this.bells();
+      return json({ default: !rows.length, bells: normalize(rows).map(([period, start, end]) => ({ period, start, end })),
+        now_period: currentPeriod(rows, kstNow().minutes) });
+    }
+    if (path === "/settings/bells" && method === "PUT") {
+      if (!elev) return needPin();
+      const list = (await body()).bells;
+      if (!Array.isArray(list) || list.length < 1 || list.length > 9) return fail(400, "bad_bells", "교시는 1~9개입니다");
+      const T = /^([01]\d|2[0-3]):[0-5]\d$/;
+      const rows: Bell[] = [];
+      for (const b of list as Json[]) {
+        const p = Number(b.period), st = String(b.start ?? ""), en = String(b.end ?? "");
+        if (!Number.isInteger(p) || p < 1 || p > 9) return fail(400, "bad_period", "교시 번호는 1~9입니다");
+        if (!T.test(st) || !T.test(en)) return fail(400, "bad_time", `${p}교시 시각을 확인하세요`);
+        if (st >= en) return fail(400, "bad_time", `${p}교시 시작이 끝보다 늦습니다`);
+        rows.push([p, st, en]);
+      }
+      if (new Set(rows.map((r) => r[0])).size !== rows.length) return fail(400, "dup_period", "같은 교시가 두 번 있습니다");
+      const sorted = [...rows].sort((a, b) => (a[1] < b[1] ? -1 : 1));
+      for (let i = 1; i < sorted.length; i++) {
+        if (sorted[i][1] < sorted[i - 1][2]) return fail(400, "overlap", `${sorted[i - 1][0]}교시와 ${sorted[i][0]}교시 시간이 겹칩니다`);
+        if (sorted[i][0] < sorted[i - 1][0]) return fail(400, "order", "교시 번호와 시각 순서가 맞지 않습니다");
+      }
+      this.sql.exec("DELETE FROM bells");
+      for (const [p, st, en] of rows) this.sql.exec("INSERT INTO bells (period, start, end_) VALUES (?, ?, ?)", p, st, en);
+      await this.scheduleAlarm();
+      return json({ ok: true });
+    }
+    if (path === "/settings/timetable" && method === "GET") {
+      const slots = this.sql.exec<{ weekday: number; period: number; subject: string }>("SELECT weekday, period, subject FROM timetable").toArray();
+      return json({ slots });
+    }
+    if (path === "/settings/timetable" && method === "PUT") {
+      if (!elev) return needPin();
+      const slots = (await body()).slots;
+      if (!Array.isArray(slots) || slots.length > 45) return fail(400, "bad_slots", "시간표가 맞지 않습니다");
+      this.sql.exec("DELETE FROM timetable");
+      for (const x of slots as Json[]) {
+        const w = Number(x.weekday), p = Number(x.period), sub = String(x.subject ?? "").trim().slice(0, 30);
+        if (!sub || !Number.isInteger(w) || w < 1 || w > 5 || !Number.isInteger(p) || p < 1 || p > 9) continue;
+        this.sql.exec("INSERT OR REPLACE INTO timetable (weekday, period, subject) VALUES (?, ?, ?)", w, p, sub);
+      }
+      // 오늘 아직 과목이 비어 있는 수업에는 바로 붙임
+      const today = kstNow().day;
+      for (const r of this.sql.exec<{ id: number; period_from: number }>(
+        "SELECT id, period_from FROM sessions WHERE day = ? AND subject = '' AND deleted = 0", today).toArray()) {
+        const sub = this.subjectFor(today, r.period_from);
+        if (sub) this.sql.exec("UPDATE sessions SET subject = ? WHERE id = ?", sub, r.id);
+      }
+      return json({ ok: true });
+    }
+
     /* 자료(사진·PDF): 변환은 올리는 기기에서, 서버는 보관만 */
     if (path === "/media/recent" && method === "GET") return json(this.media.recent());
     if (path === "/media/find" && method === "GET") {
@@ -730,10 +785,17 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       sessionId, n, bgColor, Date.now()).one().id;
   }
 
+  /** 학급 시간표의 과목(월~금, 1~9교시) */
+  private subjectFor(day: string, period: number): string {
+    const wd = new Date(day + "T00:00:00Z").getUTCDay();
+    if (wd < 1 || wd > 5 || period < 1 || period > 9) return "";
+    return this.sql.exec<{ subject: string }>("SELECT subject FROM timetable WHERE weekday = ? AND period = ?", wd, period).toArray()[0]?.subject ?? "";
+  }
+
   private createSession(day: string, period: number): Json {
     const id = this.sql.exec<{ id: number }>(
-      "INSERT INTO sessions (day, period_from, period_to, created_at) VALUES (?, ?, ?, ?) RETURNING id",
-      day, period, period, Date.now()).one().id;
+      "INSERT INTO sessions (day, period_from, period_to, subject, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id",
+      day, period, period, this.subjectFor(day, period), Date.now()).one().id;
     this.createPage(id);
     return this.getSession(id)!;
   }

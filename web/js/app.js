@@ -154,6 +154,7 @@ async function join() {
   net.resend();
   callTools.refresh();
   jointTools.afterJoin(r);
+  checkBells();
   // 기록 보기에서 '이어서 수업'으로 들어온 경우
   const openId = new URLSearchParams(location.search).get('open');
   if (openId) {
@@ -163,6 +164,20 @@ async function join() {
     if (!res || !res.ok) toast('그 판서를 열지 못했습니다' + (res && res.error ? ` (${res.error})` : ''));
   }
 }
+
+// 교시 시각이 기본값이면 알림(학교마다 종 시각이 다름). '나중에'는 오늘 하루만 숨김.
+async function checkBells() {
+  const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' });
+  if (store.get('bellsLater', '') === today) return;
+  try {
+    const t = net.lastToken || await net.token();
+    const r = await fetch('/eboard-api/settings/bells', { headers: { Authorization: 'Bearer ' + t } });
+    const j = await r.json();
+    $('#bell-banner').hidden = !(r.ok && j.default);
+  } catch { /* 무시 */ }
+}
+$('#bell-banner-go').addEventListener('click', () => goPage('settings.html'));
+$('#bell-banner-x').addEventListener('click', () => { store.set('bellsLater', new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' })); $('#bell-banner').hidden = true; });
 
 function elevToken() {
   try {
@@ -192,7 +207,7 @@ async function elevate(why) {
 
 // 기록·설정 화면으로: 등록 전자칠판은 PIN 을 먼저
 async function goPage(file) {
-  if (deviceKey && !(await elevate(file === 'history.html' ? '판서 기록을 보려면 PIN 이 필요합니다' : '설정을 바꾸려면 PIN 이 필요합니다'))) return;
+  if (deviceKey && !(await elevate(file === 'history.html' ? '판서 기록을 보려면 PIN 이 필요합니다' : '교시·시간표를 바꾸려면 PIN 이 필요합니다'))) return;
   // 기록에 지금 판서가 바로 보이도록 스냅샷을 올린 뒤 이동(최대 3초)
   await Promise.race([snapshotCurrent(), new Promise((r) => setTimeout(r, 3000))]);
   const q = klass ? `?grade=${klass.grade}&class=${klass.class}` : '';
@@ -596,7 +611,7 @@ $('#menu-new-session').addEventListener('click', async () => {
   if (!r || !r.ok) toast('새 수업을 시작하지 못했습니다');
 });
 $('#menu-history').addEventListener('click', () => goPage('history.html'));
-$('#menu-settings').addEventListener('click', () => goPage('settings.php'));
+$('#menu-settings').addEventListener('click', () => goPage('settings.html'));
 $('#menu-plan').addEventListener('click', () => goPage('plan.php'));
 $('#menu-pos').addEventListener('click', () => {
   const bottom = document.body.classList.toggle('bar-bottom'); store.set('barBottom', bottom);
