@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>classboard 검증 시험판</title>
+<style>
+  :root { --ink:#1d1d1b; --quiet:#6b6b66; --line:#d9d8d2; --bg:#f6f5f1; --card:#fff; --accent:#2f6fde; --bad:#c2410c; --good:#15803d; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; color:var(--ink); background:var(--bg); }
+  header { padding:16px 20px; border-bottom:1px solid var(--line); background:var(--card); display:flex; gap:16px; align-items:baseline; flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; }
+  header .meta { color:var(--quiet); font-size:13px; }
+  main { max-width:1080px; margin:0 auto; padding:16px; display:grid; gap:16px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  section h2 { font-size:15px; margin:0 0 10px; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  button { font:inherit; font-size:14px; padding:7px 14px; border-radius:8px; border:1px solid var(--line); background:#fff; cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.danger { background:var(--bad); border-color:var(--bad); color:#fff; }
+  button:disabled { opacity:.45; cursor:default; }
+  select, input { font:inherit; font-size:14px; padding:6px 8px; border:1px solid var(--line); border-radius:8px; }
+  input[type=number] { width:120px; }
+  .pill { display:inline-block; padding:2px 10px; border-radius:999px; font-size:13px; background:#eee; }
+  .pill.on { background:#dcfce7; color:var(--good); }
+  .pill.off { background:#fee2e2; color:var(--bad); }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:8px; margin-top:10px; }
+  .stat { border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+  .stat b { display:block; font-size:20px; }
+  .stat span { color:var(--quiet); font-size:12px; }
+  canvas { width:100%; aspect-ratio:16/9; border:1px solid var(--line); border-radius:8px; background:#fff; touch-action:none; display:block; }
+  .warn { background:#fff7ed; border:1px solid #fed7aa; border-radius:8px; padding:10px 12px; font-size:14px; line-height:1.55; }
+  .log { font-family: ui-monospace, Consolas, monospace; font-size:12px; background:#fafaf8; border:1px solid var(--line); border-radius:8px; padding:8px; height:160px; overflow:auto; white-space:pre-wrap; }
+  .hint { color:var(--quiet); font-size:13px; line-height:1.55; }
+  .verdict { margin-top:10px; font-size:14px; font-weight:600; }
+</style>
+</head>
+<body>
+<header>
+  <h1>classboard 검증 시험판</h1>
+  <span class="meta" id="meta">서버 확인 중…</span>
+</header>
+
+<main>
+  <section>
+    <h2>1. 연결</h2>
+    <div class="row">
+      <label>이 기기는
+        <select id="role">
+          <option value="board">전자칠판</option>
+          <option value="teacher">교사 PC·태블릿</option>
+          <option value="student">학생 기기</option>
+        </select>
+      </label>
+      <button class="primary" id="btn-connect">연결</button>
+      <button id="btn-disconnect" disabled>끊기</button>
+      <span class="pill off" id="status">연결 안 됨</span>
+      <span class="hint" id="peers"></span>
+    </div>
+    <p class="hint">학교 전자칠판에서 이 페이지가 열리고 '연결됨'이 뜨면 학교망에서 <code>workers.dev</code> 접속과 WebSocket이 되는 것입니다(검증 1번).</p>
+  </section>
+
+  <section>
+    <h2>2. 지연 측정</h2>
+    <div class="row">
+      <button id="btn-ping" disabled>20회 측정</button>
+      <span class="hint">연결하면 자동으로 한 번 측정합니다.</span>
+    </div>
+    <div class="stats">
+      <div class="stat"><b id="rtt-min">–</b><span>최소 (ms)</span></div>
+      <div class="stat"><b id="rtt-med">–</b><span>중앙값 (ms)</span></div>
+      <div class="stat"><b id="rtt-max">–</b><span>최대 (ms)</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>3. 판서 동기화</h2>
+    <p class="hint">두 기기 이상에서 이 페이지를 열고 연결한 뒤 아래에 그려 보세요. 다른 기기에 바로 나타나야 합니다.</p>
+    <canvas id="board" width="1600" height="900"></canvas>
+    <div class="row" style="margin-top:8px">
+      <button id="btn-clear" disabled>모두 지우기</button>
+      <span class="hint" id="draw-info"></span>
+    </div>
+  </section>
+
+  <section>
+    <h2>4. 무료 한도 시험 (20:1 계산 확인)</h2>
+    <div class="warn">
+      <b>시험용 Cloudflare 계정에서만 실행하세요.</b> 무료 한도(하루 10만 건)를 넘기면 이 계정의 Durable Object가
+      한국 시간 오전 9시(UTC 0시)까지 멈춥니다. 오전 9시 이후에 시작하는 것이 좋습니다.<br>
+      결과 읽는 법: 10만 개 근처에서 연결이 끊기고 '새 연결 시험'도 실패하면 → 20:1이 <b>적용되지 않음</b>.
+      15만 개를 다 보내고 새 연결도 되면 → 20:1이 <b>적용됨</b>.
+    </div>
+    <div class="row" style="margin-top:10px">
+      <label>보낼 개수 <input type="number" id="probe-total" value="150000" min="1000" step="1000"></label>
+      <label>초당 <input type="number" id="probe-rate" value="500" min="50" step="50"></label>
+      <button class="danger" id="btn-probe">시작</button>
+      <button id="btn-probe-stop" disabled>멈춤</button>
+      <button id="btn-stats">서버 상태 확인</button>
+      <button id="btn-newconn">새 연결 시험</button>
+    </div>
+    <div class="stats">
+      <div class="stat"><b id="p-sent">0</b><span>보낸 메시지</span></div>
+      <div class="stat"><b id="p-server">–</b><span>서버가 오늘 받은 수 (UTC)</span></div>
+      <div class="stat"><b id="p-elapsed">0초</b><span>경과</span></div>
+      <div class="stat"><b id="p-state">대기</b><span>시험 연결 상태</span></div>
+    </div>
+    <div class="verdict" id="verdict"></div>
+    <div class="log" id="log" style="margin-top:10px"></div>
+  </section>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const wsUrl = (role) => `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?role=${role}`;
+  const logEl = $("log");
+  const log = (m) => {
+    const t = new Date().toLocaleTimeString("ko-KR", { hour12: false });
+    logEl.textContent += `[${t}] ${m}\n`;
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+  const fmt = (n) => Number(n).toLocaleString("ko-KR");
+
+  fetch("/api/health").then((r) => r.json()).then((h) => {
+    $("meta").textContent = `버전 ${h.version} · 응답 데이터센터 ${h.colo ?? "?"} · ${h.country ?? ""}`;
+  }).catch(() => { $("meta").textContent = "서버 응답 없음"; });
+
+  /* ---------- 1. 연결 ---------- */
+  let ws = null, myId = null, pingTimer = null;
+  const ROLE_KO = { teacher: "교사", board: "전자칠판", student: "학생", probe: "시험" };
+  const showPeers = (p) => {
+    if (!p) return;
+    $("peers").textContent = "접속 중: " + Object.entries(p).filter(([, n]) => n).map(([r, n]) => `${ROLE_KO[r]} ${n}`).join(", ");
+  };
+  const setConnected = (on) => {
+    $("status").textContent = on ? "연결됨" : "연결 안 됨";
+    $("status").className = "pill " + (on ? "on" : "off");
+    $("btn-connect").disabled = on;
+    $("btn-disconnect").disabled = !on;
+    $("btn-ping").disabled = !on;
+    $("btn-clear").disabled = !on;
+  };
+
+  function connect() {
+    ws = new WebSocket(wsUrl($("role").value));
+    ws.onopen = () => {
+      setConnected(true);
+      pingTimer = setInterval(() => ws && ws.readyState === 1 && ws.send("ping"), 15000); // 자동 응답(과금 없음)
+    };
+    ws.onclose = (e) => {
+      setConnected(false);
+      clearInterval(pingTimer);
+      log(`판서 연결 종료 (코드 ${e.code}${e.reason ? ", " + e.reason : ""})`);
+    };
+    ws.onerror = () => log("판서 연결 오류");
+    ws.onmessage = (e) => {
+      if (e.data === "pong") return;
+      const m = JSON.parse(e.data);
+      if (m.t === "hello") { myId = m.id; showPeers(m.peers); measure(); }
+      else if (m.t === "peers") showPeers(m.peers);
+      else if (m.t === "echo") onEcho(m);
+      else if (m.t === "stroke:live") drawRemote(m);
+      else if (m.t === "stroke:end") remote.delete(m.from + ":" + m.sid);
+      else if (m.t === "clear") clearBoard();
+    };
+  }
+  $("btn-connect").onclick = connect;
+  $("btn-disconnect").onclick = () => ws && ws.close(1000);
+
+  /* ---------- 2. 지연 측정 ---------- */
+  let rtts = [], pending = 0;
+  function measure() {
+    rtts = []; pending = 20;
+    const next = () => { if (pending-- > 0 && ws?.readyState === 1) ws.send(JSON.stringify({ t: "echo", ts: performance.now() })); };
+    onEcho.next = next;
+    next();
+  }
+  function onEcho(m) {
+    rtts.push(performance.now() - m.ts);
+    if (pending > 0) return setTimeout(onEcho.next, 50);
+    const s = [...rtts].sort((a, b) => a - b);
+    $("rtt-min").textContent = s[0].toFixed(0);
+    $("rtt-med").textContent = s[Math.floor(s.length / 2)].toFixed(0);
+    $("rtt-max").textContent = s[s.length - 1].toFixed(0);
+  }
+  $("btn-ping").onclick = measure;
+
+  /* ---------- 3. 판서 동기화 (jmschool판과 같은 40ms 간격) ---------- */
+  const cv = $("board"), cx = cv.getContext("2d");
+  cx.lineCap = "round"; cx.lineJoin = "round";
+  const COLORS = ["#1d1d1b", "#2f6fde", "#c2410c", "#15803d", "#7c3aed"];
+  const myColor = COLORS[Math.floor(Math.random() * COLORS.length)];
+  const LIVE_MS = 40;
+  let stroke = null, sentLive = 0;
+  const remote = new Map();
+
+  const toCanvas = (e) => {
+    const r = cv.getBoundingClientRect();
+    return [Math.round((e.clientX - r.left) * cv.width / r.width), Math.round((e.clientY - r.top) * cv.height / r.height)];
+  };
+  const seg = (pts, color) => {
+    if (pts.length < 2) return;
+    cx.strokeStyle = color; cx.lineWidth = 4; cx.beginPath();
+    cx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) cx.lineTo(pts[i][0], pts[i][1]);
+    cx.stroke();
+  };
+  const flush = (force) => {
+    if (!stroke || !ws || ws.readyState !== 1) return;
+    const now = performance.now();
+    if (!force && now - stroke.last < LIVE_MS) return;
+    if (stroke.buf.length === 0) return;
+    ws.send(JSON.stringify({ t: "stroke:live", sid: stroke.sid, c: myColor, p: stroke.buf }));
+    sentLive++;
+    stroke.buf = [stroke.buf[stroke.buf.length - 1]];
+    stroke.last = now;
+    $("draw-info").textContent = `이 기기가 보낸 실시간 획 메시지 ${fmt(sentLive)}개`;
+  };
+  cv.addEventListener("pointerdown", (e) => {
+    cv.setPointerCapture(e.pointerId);
+    const p = toCanvas(e);
+    stroke = { sid: Math.random().toString(36).slice(2, 8), buf: [p], prev: p, last: 0 };
+  });
+  cv.addEventListener("pointermove", (e) => {
+    if (!stroke) return;
+    const p = toCanvas(e);
+    seg([stroke.prev, p], myColor);
+    stroke.prev = p;
+    stroke.buf.push(p);
+    flush(false);
+  });
+  const end = () => {
+    if (!stroke) return;
+    flush(true);
+    ws?.readyState === 1 && ws.send(JSON.stringify({ t: "stroke:end", sid: stroke.sid }));
+    stroke = null;
+  };
+  cv.addEventListener("pointerup", end);
+  cv.addEventListener("pointercancel", end);
+
+  function drawRemote(m) {
+    const key = m.from + ":" + m.sid;
+    const last = remote.get(key);
+    seg(last ? [last, ...m.p] : m.p, m.c || "#888");
+    remote.set(key, m.p[m.p.length - 1]);
+  }
+  function clearBoard() { cx.clearRect(0, 0, cv.width, cv.height); remote.clear(); }
+  $("btn-clear").onclick = () => { clearBoard(); ws?.readyState === 1 && ws.send(JSON.stringify({ t: "clear" })); };
+
+  /* ---------- 4. 무료 한도 시험 ---------- */
+  let pws = null, pTimer = null, pSent = 0, pStart = 0, pTotal = 0, pClosedAt = null;
+  const setP = (s) => { $("p-state").textContent = s; };
+  const tick = () => { $("p-elapsed").textContent = Math.round((performance.now() - pStart) / 1000) + "초"; };
+
+  function verdict() {
+    const v = $("verdict");
+    if (pClosedAt !== null) {
+      v.style.color = "var(--bad)";
+      v.textContent = `${fmt(pClosedAt)}개째에서 연결이 끊겼습니다. '새 연결 시험'도 실패하면 20:1이 무료 플랜에 적용되지 않는 것입니다.`;
+    } else if (pSent >= pTotal) {
+      v.style.color = "var(--good)";
+      v.textContent = `${fmt(pSent)}개를 모두 보냈습니다. '새 연결 시험'이 성공하면 20:1이 무료 플랜에도 적용되는 것입니다.`;
+    }
+  }
+
+  function startProbe() {
+    if (!confirm("시험용 Cloudflare 계정이 맞습니까? 한도를 넘으면 이 계정의 Durable Object가 오전 9시까지 멈춥니다.")) return;
+    pTotal = Math.max(1000, Number($("probe-total").value) || 150000);
+    const rate = Math.max(50, Number($("probe-rate").value) || 500);
+    const perTick = Math.max(1, Math.round(rate / 20)); // 50ms마다
+    pSent = 0; pClosedAt = null; $("verdict").textContent = "";
+    pws = new WebSocket(wsUrl("probe"));
+    setP("연결 중");
+    pws.onopen = () => {
+      setP("보내는 중"); pStart = performance.now();
+      log(`한도 시험 시작: ${fmt(pTotal)}개, 초당 ${rate}개`);
+      $("btn-probe").disabled = true; $("btn-probe-stop").disabled = false;
+      pTimer = setInterval(() => {
+        tick();
+        if (pws.readyState !== 1) return;
+        if (pws.bufferedAmount > 256 * 1024) return; // 브라우저 쪽 밀림 방지
+        for (let i = 0; i < perTick && pSent < pTotal; i++) { pws.send('{"t":"probe"}'); pSent++; }
+        $("p-sent").textContent = fmt(pSent);
+        if (pSent >= pTotal) { stopProbe("완료"); }
+      }, 50);
+    };
+    pws.onmessage = (e) => {
+      const m = JSON.parse(e.data);
+      if (m.t === "hello") $("p-server").textContent = fmt(m.received);
+      if (m.t === "count") $("p-server").textContent = fmt(m.received);
+    };
+    pws.onclose = (e) => {
+      if (pTimer && pSent < pTotal) {
+        pClosedAt = pSent;
+        log(`시험 연결이 끊김: ${fmt(pSent)}개째 (코드 ${e.code}${e.reason ? ", " + e.reason : ""})`);
+        stopProbe("끊김");
+      }
+    };
+    pws.onerror = () => log("시험 연결 오류");
+  }
+  function stopProbe(state) {
+    clearInterval(pTimer); pTimer = null; tick();
+    setP(state);
+    $("btn-probe").disabled = false; $("btn-probe-stop").disabled = true;
+    log(`한도 시험 ${state}: 보낸 수 ${fmt(pSent)}`);
+    // 서버가 받은 수를 마지막으로 확인한 뒤 닫음
+    setTimeout(() => {
+      if (pws && pws.readyState === 1) { pws.send('{"t":"stats"}'); setTimeout(() => pws && pws.close(1000), 1500); }
+      checkStats();
+    }, 500);
+    verdict();
+  }
+  $("btn-probe").onclick = startProbe;
+  $("btn-probe-stop").onclick = () => stopProbe("멈춤");
+
+  async function checkStats() {
+    try {
+      const r = await fetch("/api/stats", { cache: "no-store" });
+      const s = await r.json();
+      if (!r.ok) { log(`서버 상태 확인 실패 (${r.status}): ${s.message || s.error}`); return; }
+      $("p-server").textContent = fmt(s.received);
+      log(`서버 상태: ${s.day} 받은 메시지 ${fmt(s.received)}개`);
+    } catch (e) { log("서버 상태 확인 실패: " + e); }
+  }
+  $("btn-stats").onclick = checkStats;
+
+  $("btn-newconn").onclick = () => {
+    const t0 = performance.now();
+    const test = new WebSocket(wsUrl("probe"));
+    const fail = setTimeout(() => { log("새 연결 시험 실패: 5초 안에 응답 없음"); try { test.close(); } catch {} }, 5000);
+    test.onmessage = (e) => {
+      const m = JSON.parse(e.data);
+      if (m.t !== "hello") return;
+      clearTimeout(fail);
+      log(`새 연결 시험 성공 (${Math.round(performance.now() - t0)}ms, 서버가 오늘 받은 수 ${fmt(m.received)})`);
+      test.close(1000);
+    };
+    test.onclose = (e) => { if (e.code !== 1000) { clearTimeout(fail); log(`새 연결 시험 실패 (코드 ${e.code})`); } };
+  };
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+// classboard 검증용 시험판 설정 (기본판: R2 없음)
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "classboard",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "./web",
+    "binding": "ASSETS"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "ROOM", "class_name": "ClassRoom" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ClassRoom"] }],
+  "observability": { "enabled": true }
+}
