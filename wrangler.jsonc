@@ -1,4 +1,4 @@
-// classboard 검증용 시험판 설정 (기본판: R2 없음)
+// classboard 기본판 설정 (R2 없음)
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "classboard",
@@ -9,9 +9,15 @@
     "binding": "ASSETS"
   },
   "durable_objects": {
-    "bindings": [{ "name": "ROOM", "class_name": "ClassRoom" }]
+    "bindings": [
+      { "name": "ROOM", "class_name": "ClassRoom" },
+      { "name": "PROBE", "class_name": "ProbeRoom" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ClassRoom"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ClassRoom"] },
+    { "tag": "v2", "new_sqlite_classes": ["ProbeRoom"] }
+  ],
   // workers.dev 주소는 쓰고, 브랜치별 미리보기 주소는 만들지 않음
   "workers_dev": true,
   "preview_urls": false,

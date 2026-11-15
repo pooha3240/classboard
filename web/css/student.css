@@ -1,0 +1,27 @@
+/* 학생 화면 */
+body.student { display: flex; flex-direction: column; }
+.stu-screen { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 24px; text-align: center; }
+.stu-screen[hidden] { display: none; }
+.stu-screen h1 { margin: 0; font-size: 28px; word-break: keep-all; }
+.stu-wait-icon { font-size: 72px; opacity: .5; }
+.stu-actions { display: flex; flex-direction: column; gap: 12px; width: min(420px, 100%); }
+.stu-big, .stu-small { display: flex; align-items: center; justify-content: center; min-height: 64px; border-radius: 16px; font-size: 20px; font-weight: 700; cursor: pointer; border: 0; }
+.stu-big { background: var(--accent); color: #fff; }
+.stu-big.send { background: var(--ok); }
+.stu-big[hidden] { display: none; }
+.stu-small { background: #fff; border: 1px solid var(--line); color: var(--ink); font-weight: 500; font-size: 17px; min-height: 52px; }
+.stu-preview { width: min(520px, 100%); max-height: 46vh; display: flex; justify-content: center; }
+.stu-preview[hidden] { display: none; }
+.stu-preview img { max-width: 100%; max-height: 46vh; border-radius: 12px; box-shadow: 0 6px 20px rgba(0,0,0,.15); object-fit: contain; }
+#photo .md-progress { width: min(420px, 100%); }
+#solve[hidden] { display: none; }
+#solve #workspace { bottom: 68px; }
+.stu-bar { overflow-y: auto; }
+.stu-solve-bar { position: fixed; left: 0; right: 0; bottom: 0; height: 68px; display: flex; align-items: center; gap: 12px; padding: 8px 12px; background: var(--panel); border-top: 1px solid var(--line); }
+.stu-solve-bar .muted { flex: 1; font-size: 14px; }
+.stu-done { min-height: 52px; padding: 0 22px; border: 0; border-radius: 14px; background: var(--ok); color: #fff; font-size: 18px; font-weight: 700; cursor: pointer; }
+.stu-done.on { background: #b9e2c8; color: #155c33; }
+.stu-hand { min-height: 52px; padding: 0 20px; border: 2px solid #f0a020; border-radius: 14px; background: #fff; color: #9a5b00; font-size: 18px; font-weight: 700; cursor: pointer; }
+.stu-hand[hidden], .stu-done[hidden] { display: none; }
+.stu-hand.on { background: #f0a020; color: #fff; }
+body.stu-watch #toolbar { display: none; }

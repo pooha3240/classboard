@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>전자칠판 로그인</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<style>
+  :root { --ink:#1d1d1b; --quiet:#6b6b66; --line:#d9d8d2; --bg:#f4f4f1; --accent:#1b5fd1; --bad:#c2410c; }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100vh; display:grid; place-items:center; background:var(--bg); color:var(--ink);
+         font-family: system-ui, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
+  main { width:min(420px, 92vw); background:#fff; border:1px solid var(--line); border-radius:14px; padding:28px; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  p.sub { color:var(--quiet); font-size:14px; margin:0 0 20px; line-height:1.55; }
+  label { display:block; font-size:13px; color:var(--quiet); margin:12px 0 4px; }
+  input { width:100%; font:inherit; font-size:16px; padding:10px 12px; border:1px solid var(--line); border-radius:9px; }
+  .row { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }
+  button { width:100%; margin-top:20px; font:inherit; font-size:16px; padding:11px; border-radius:9px; border:0; background:var(--accent); color:#fff; cursor:pointer; }
+  button:disabled { opacity:.5; }
+  .link { background:none; color:var(--quiet); font-size:13px; padding:4px; margin-top:12px; text-decoration:underline; }
+  .err { color:var(--bad); font-size:14px; min-height:20px; margin-top:12px; }
+  .note { background:#fff7ed; border:1px solid #fed7aa; border-radius:9px; padding:10px 12px; font-size:13px; line-height:1.55; margin-bottom:8px; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <section id="loading"><p class="sub">확인 중…</p></section>
+
+  <!-- 최초 설정: 설치 키로 교사 계정과 학급을 만듭니다 -->
+  <form id="setup" hidden>
+    <h1>처음 설정</h1>
+    <p class="sub">이 칠판을 쓸 학급과 교사 계정을 만듭니다. 설치할 때 정한 <b>설치 키(SETUP_KEY)</b>가 필요합니다.</p>
+    <div class="note" id="no-key" hidden>Cloudflare 설정에 SETUP_KEY 비밀값이 아직 없습니다. 설치 안내의 'SETUP_KEY 넣기'를 먼저 해 주세요.</div>
+    <label for="s-key">설치 키</label><input id="s-key" type="password" autocomplete="off" required>
+    <div class="row">
+      <div><label for="s-grade">학년</label><input id="s-grade" type="number" min="1" max="6" required></div>
+      <div><label for="s-class">반</label><input id="s-class" type="number" min="1" max="30" required></div>
+      <div><label for="s-size">인원</label><input id="s-size" type="number" min="1" max="60" required></div>
+    </div>
+    <label for="s-name">이름(칠판에 보일 이름)</label><input id="s-name" maxlength="20" placeholder="예: 김선생">
+    <label for="s-id">아이디 (영문·숫자)</label><input id="s-id" autocomplete="username" required>
+    <label for="s-pw">비밀번호 (8자 이상)</label><input id="s-pw" type="password" autocomplete="new-password" required>
+    <label for="s-pw2">비밀번호 확인</label><input id="s-pw2" type="password" autocomplete="new-password" required>
+    <button type="submit">만들기</button>
+    <div class="err" id="s-err"></div>
+  </form>
+
+  <!-- 로그인 -->
+  <form id="login" hidden>
+    <h1>전자칠판</h1>
+    <p class="sub" id="l-class"></p>
+    <label for="l-id">아이디</label><input id="l-id" autocomplete="username" required>
+    <label for="l-pw">비밀번호</label><input id="l-pw" type="password" autocomplete="current-password" required>
+    <button type="submit">로그인</button>
+    <button type="button" class="link" id="to-reset">비밀번호를 잊었을 때</button>
+    <div class="err" id="l-err"></div>
+  </form>
+
+  <!-- 비밀번호 다시 정하기: 설치 키로 -->
+  <form id="reset" hidden>
+    <h1>비밀번호 다시 정하기</h1>
+    <p class="sub">설치 키가 있으면 아이디와 비밀번호를 다시 정할 수 있습니다. 판서 기록은 그대로 남습니다.</p>
+    <label for="r-key">설치 키</label><input id="r-key" type="password" autocomplete="off" required>
+    <label for="r-id">아이디</label><input id="r-id" autocomplete="username" required>
+    <label for="r-pw">새 비밀번호 (8자 이상)</label><input id="r-pw" type="password" autocomplete="new-password" required>
+    <button type="submit">다시 정하기</button>
+    <button type="button" class="link" id="to-login">로그인으로 돌아가기</button>
+    <div class="err" id="r-err"></div>
+  </form>
+</main>
+
+<script type="module">
+import { saveToken } from './js/net.js';
+const $ = (id) => document.getElementById(id);
+const show = (id) => { for (const s of ['loading', 'setup', 'login', 'reset']) $(s).hidden = s !== id; };
+
+async function post(path, body) {
+  const r = await fetch('/eboard-api' + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error((j.detail && j.detail.message) || ('오류 ' + r.status));
+  return j;
+}
+
+async function start() {
+  const [st, health] = await Promise.all([
+    fetch('/eboard-api/setup/status', { cache: 'no-store' }).then((r) => r.json()),
+    fetch('/api/health', { cache: 'no-store' }).then((r) => r.json()).catch(() => ({})),
+  ]);
+  if (!st.configured) {
+    $('no-key').hidden = health.setup_key !== false;
+    show('setup');
+    return;
+  }
+  $('l-class').textContent = `${st.klass.grade}학년 ${st.klass.class}반 칠판`;
+  show('login');
+}
+
+async function login(id, pw) {
+  const t = await post('/login', { login_id: id, password: pw });
+  saveToken({ token: t.token, exp: t.exp });
+  location.replace('/');
+}
+
+$('setup').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const err = $('s-err'); err.textContent = '';
+  if ($('s-pw').value !== $('s-pw2').value) { err.textContent = '비밀번호 확인이 다릅니다'; return; }
+  e.submitter.disabled = true;
+  try {
+    await post('/setup', {
+      setup_key: $('s-key').value, grade: +$('s-grade').value, class: +$('s-class').value, size: +$('s-size').value,
+      name: $('s-name').value, login_id: $('s-id').value.trim(), password: $('s-pw').value,
+    });
+    await login($('s-id').value.trim(), $('s-pw').value);
+  } catch (x) { err.textContent = x.message; e.submitter.disabled = false; }
+});
+
+$('login').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('l-err').textContent = '';
+  e.submitter.disabled = true;
+  try { await login($('l-id').value.trim(), $('l-pw').value); }
+  catch (x) { $('l-err').textContent = x.message; e.submitter.disabled = false; }
+});
+
+$('reset').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('r-err').textContent = '';
+  e.submitter.disabled = true;
+  try {
+    await post('/setup', { setup_key: $('r-key').value, login_id: $('r-id').value.trim(), password: $('r-pw').value });
+    await login($('r-id').value.trim(), $('r-pw').value);
+  } catch (x) { $('r-err').textContent = x.message; e.submitter.disabled = false; }
+});
+
+$('to-reset').onclick = () => show('reset');
+$('to-login').onclick = () => show('login');
+start().catch((x) => { $('loading').innerHTML = `<p class="sub">서버에 연결하지 못했습니다 (${x.message})</p>`; });
+</script>
+</body>
+</html>
