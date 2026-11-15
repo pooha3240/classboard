@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>판서 기록</title>
+<link rel="stylesheet" href="css/board.css?v=0.5.0">
+<link rel="stylesheet" href="css/pages.css?v=0.5.0">
+</head>
+<body class="page-body" data-login="login.html">
+  <header class="page-top">
+    <a class="chip" href="./">‹ 칠판</a>
+    <h1>판서 기록</h1>
+    <select id="class-select" class="chip" aria-label="학급"></select>
+    <div class="month">
+      <button id="prev-month" class="chip" type="button" aria-label="이전 달">‹</button>
+      <span id="month-label"></span>
+      <button id="next-month" class="chip" type="button" aria-label="다음 달">›</button>
+    </div>
+  </header>
+  <main id="list" class="list"></main>
+  <p id="storage" class="muted small storage-line"></p>
+
+  <dialog id="session" class="sheet">
+    <header class="sheet-top">
+      <h2 id="sess-title"></h2>
+      <div class="actions">
+        <button id="sess-continue" type="button" class="chip primary">이 판서로 이어서 수업</button>
+        <button id="sess-print" type="button" class="chip">PDF로 저장</button>
+        <button id="sess-delete" type="button" class="chip danger">삭제</button>
+        <button type="button" class="chip" onclick="this.closest('dialog').close()">닫기</button>
+      </div>
+    </header>
+    <div id="sess-pages" class="cards pages-grid"></div>
+  </dialog>
+
+  <dialog id="viewer" class="sheet viewer">
+    <header class="sheet-top">
+      <h2 id="viewer-title"></h2>
+      <div class="actions">
+        <button id="play" type="button" class="chip primary">▶ 재생</button>
+        <span class="speed"><button type="button" class="chip" data-speed="1">1배</button><button type="button" class="chip on" data-speed="4">4배</button><button type="button" class="chip" data-speed="16">16배</button></span>
+        <button type="button" class="chip" onclick="this.closest('dialog').close()">닫기</button>
+      </div>
+    </header>
+    <div class="viewer-stage"><canvas id="viewer-canvas"></canvas></div>
+    <div class="seek-row"><input id="seek" type="range" min="0" max="1" value="0"><span id="time-label" class="muted"></span></div>
+  </dialog>
+
+  <div id="print-area" class="print-area"></div>
+  <script type="module" src="js/history.js?v=0.5.0"></script>
+</body>
+</html>

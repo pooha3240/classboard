@@ -34,7 +34,7 @@ function actions(c) {
     { id: 'undo', g: '칠판', label: '되돌림', run: () => c.tools.undo() },
     { id: 'clear', g: '칠판', label: '전체 지우기', run: () => c.clearPage() },
     { id: 'fit', g: '칠판', label: '화면 맞춤', run: () => c.renderer.fit() },
-    { id: 'history', g: '칠판', label: '판서 기록', run: () => c.goPage('history.php') },
+    { id: 'history', g: '칠판', label: '판서 기록', run: () => c.goPage('history.html') },
     { id: 'media', g: '자료', label: '자료', run: () => c.mediaTools.toggle() },
     { id: 'cam', g: '자료', label: '웹캠', run: () => c.mediaTools.openCam() },
   ];

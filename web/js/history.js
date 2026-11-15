@@ -44,6 +44,10 @@ async function loadList() {
     if (!needLogin(e)) list.innerHTML = `<p class="muted">${esc(e.message)}</p>`;
     return;
   }
+  if (j.storage) {
+    const mb = (n) => Math.round(n / 1e6);
+    $('#storage').textContent = `저장 공간 ${mb(j.storage.db)}MB / ${mb(j.storage.budget)}MB (자료 ${mb(j.storage.media)}MB 포함) · 판서 재생은 ${60}일까지, 그 뒤에는 완성된 판서만 남습니다`;
+  }
   if (!j.sessions.length) { list.innerHTML = '<p class="muted empty">이 달에는 판서 기록이 없습니다.</p>'; return; }
   const byDate = new Map();
   for (const s of j.sessions) { if (!byDate.has(s.date)) byDate.set(s.date, []); byDate.get(s.date).push(s); }
@@ -63,9 +67,23 @@ async function loadList() {
         <span class="muted">${s.pages}쪽 · ${esc(s.started_at)}</span></div>`;
       b.onclick = () => openSession(s.id);
       box.appendChild(b);
+      if (!s.thumb && s.first_page) lazyThumb(b, s.first_page);
     }
     list.appendChild(sec);
   }
+}
+
+// 미리보기 그림이 없는 기록(예전 수업 등): 화면에 보일 때 첫 페이지를 이 기기에서 그림
+const thumbObs = 'IntersectionObserver' in window ? new IntersectionObserver((es) => {
+  for (const e of es) if (e.isIntersecting) { thumbObs.unobserve(e.target); e.target._draw(); }
+}, { rootMargin: '200px' }) : null;
+function lazyThumb(card, pageId) {
+  card._draw = () => api(`/history/pages/${pageId}/state`).then(async (st) => {
+    await loadBgImage(st);
+    const c = renderPageCanvas(st.objs, st.w, st.h, 400, st);
+    const box = card.querySelector('.thumb'); box.innerHTML = ''; box.appendChild(c);
+  }).catch(() => {});
+  if (thumbObs) thumbObs.observe(card); else card._draw();
 }
 
 // ── 세션 보기 ──
@@ -94,8 +112,8 @@ async function openSession(id) {
   $('#sess-continue').onclick = () => { location.href = `./?open=${s.id}`; };
   $('#sess-print').onclick = () => printSession();
   $('#sess-delete').onclick = async () => {
-    if (!confirm('이 판서 기록을 삭제할까요?')) return;
-    await api(`/history/sessions/${s.id}`, { method: 'DELETE' });
+    if (!confirm('이 판서 기록을 삭제할까요? 되살릴 수 없습니다.')) return;
+    try { await api(`/history/sessions/${s.id}`, { method: 'DELETE' }); } catch (e) { alert(e.message); return; }
     $('#session').close(); loadList();
   };
   $('#session').showModal();
@@ -112,6 +130,7 @@ async function openPage(p) {
   let v = 0, prev = j.ops.length ? j.ops[0].t : 0;
   player.times = j.ops.map((o) => { const d = o.t - prev; prev = o.t; v += d > 3000 ? 300 : Math.max(0, d); return v; });
   player.total = v;
+  $('#play').hidden = !j.replay || !j.ops.length;        // 오래된 기록은 재생 없이 완성된 판서만
   $('#seek').max = String(Math.max(1, Math.round(v)));
   seek(v);                       // 처음에는 완성된 모습
   $('#viewer-title').textContent = `${p.page_no}쪽`;

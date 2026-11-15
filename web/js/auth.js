@@ -1,12 +1,14 @@
 // 기록·설정 화면 공용: 토큰 얻기와 API 호출
-// PIN 으로 받은 전자칠판 토큰(sessionStorage) → 교사 로그인 토큰(token.php) 순서로 씁니다.
+// PIN 으로 받은 전자칠판 토큰(sessionStorage) → 교사 로그인 토큰(이 기기에 저장된 것) 순서로 씁니다.
+import { savedToken } from './net.js';
+
 export async function getToken() {
   try {
     const e = JSON.parse(sessionStorage.getItem('eboard.elev') || 'null');
     if (e && e.exp * 1000 > Date.now() + 5000) return e.token;
   } catch { /* 없음 */ }
-  const r = await fetch('token.php', { credentials: 'same-origin', cache: 'no-store' });
-  if (r.ok) return (await r.json()).token;
+  const t = savedToken('teacher');
+  if (t) return t.token;
   const err = new Error('로그인이 필요합니다');
   err.code = 'login';
   throw err;

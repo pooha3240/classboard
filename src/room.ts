@@ -13,15 +13,15 @@
  *   "ping" → "pong" 은 자동 응답(DO를 깨우지 않음)
  */
 import { DurableObject } from "cloudflare:workers";
-import { MediaStore, MediaError, MAX_PDF_PAGES, imageMeta, pageSizeFor } from "./media";
-import { sign, verify, TokenError, randomKey, hashPassword, checkPassword, sha256, type TokenPayload } from "./lib/token";
+import { MediaStore, MediaError, MAX_PDF_PAGES, imageMeta, pageSizeFor, sniffImage } from "./media";
+import { sign, verify, TokenError, randomKey, hashPassword, checkPassword, sha256, shortSig, type TokenPayload } from "./lib/token";
 import { currentPeriod, kstNow, nextBoundary, periodLabel, type Bell } from "./lib/periods";
 import {
   OpError, ID_RE, KINDS, BG_TYPES, MAX_LIVE_POINTS, MAX_OPS_PER_BATCH,
   validateObj, cleanWebUrl, cleanColor, num, type Obj,
 } from "./lib/validate";
 
-export const SERVER_VERSION = "0.4.0";
+export const SERVER_VERSION = "0.5.0";
 
 const TEACHER_DEVICES = new Set(["display", "teacher-pc", "teacher-tablet"]);
 const TOKEN_DAYS = 30;
@@ -30,6 +30,9 @@ const PIN_TTL_S = 10 * 60;            // PIN 을 풀면 10분 동안 교사 권�
 const PIN_MAX_FAILS = 5;
 const PIN_LOCK_MS = 5 * 60_000;
 const PIN_RE = /^\d{4,6}$/;
+const DB_BUDGET = 950 * 1000 * 1000;   // 무료 플랜 객체당 1GB 중 이만큼까지(자료는 남는 만큼만)
+const OPS_KEEP_DAYS = 60;              // 판서 재생용 동작 기록은 60일까지(그 뒤에는 완성된 판서만 남음)
+const MAX_THUMB = 200 * 1024;
 const SNAP_EVERY_OPS = 50;
 const SNAP_IDLE_MS = 15_000;
 
@@ -112,7 +115,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
   constructor(ctx: DurableObjectState, env: Record<string, unknown>) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
-    this.media = new MediaStore(this.sql);
+    this.media = new MediaStore(this.sql, { total: DB_BUDGET, dbSize: () => this.sql.databaseSize });
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
     ctx.blockConcurrencyWhile(async () => this.migrate());
   }
@@ -147,6 +150,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
         expires INTEGER NOT NULL, done INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
     `);
     this.media.migrate();
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS page_thumbs (page_id INTEGER PRIMARY KEY, seq INTEGER NOT NULL, data BLOB NOT NULL)`);
   }
 
   private cfg(k: string): string | null {
@@ -331,6 +335,15 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       return json({ ...t, role: "student", num: n, grade: k.grade, class: k.class });
     }
 
+    const th = /^\/thumbs\/(\d+)$/.exec(path);
+    if (th && method === "GET") {
+      const pid = Number(th[1]);
+      if (!this.configured() || url.searchParams.get("s") !== await shortSig(this.cfg("secret")!, `thumb:${pid}`)) return new Response("not found", { status: 404 });
+      const r = this.sql.exec<{ data: ArrayBuffer }>("SELECT data FROM page_thumbs WHERE page_id = ?", pid).toArray()[0];
+      if (!r) return new Response("not found", { status: 404 });
+      return new Response(r.data, { headers: { "content-type": sniffImage(new Uint8Array(r.data)) ?? "image/webp",
+        "cache-control": "private, max-age=31536000, immutable", "x-content-type-options": "nosniff" } });
+    }
     const file = /^\/files\/(\d+)$/.exec(path);
     if (file && method === "GET") return this.media.serve(Number(file[1]), url.searchParams.get("k"), url.searchParams.get("t") === "1");
 
@@ -502,10 +515,109 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       this.media.deleteSet(a.set_id);
       return json({ ok: true, usage: this.media.usage() });
     }
-    if (/^\/pages\/\d+\/snapshot$/.test(path) && method === "PUT") {
-      return json({ ok: true, stored: false });          // 판서 기록(썸네일·PDF)은 다음 단계에서
+    const snap = /^\/pages\/(\d+)\/snapshot$/.exec(path);
+    if (snap && method === "PUT") {
+      // 칠판 기기가 페이지 미리보기 그림을 올림(기록 목록용). 큰 그림은 받지 않고 미리보기만 보관.
+      const pid = Number(snap[1]);
+      if (!this.sql.exec("SELECT 1 FROM pages WHERE id = ?", pid).toArray().length) return fail(404, "not_found", "페이지가 없습니다");
+      const b = await body();
+      const seq = Number(b.seq);
+      const m = /^data:image\/(?:webp|jpeg|png);base64,([A-Za-z0-9+/=]+)$/.exec(String(b.thumb ?? ""));
+      if (!Number.isInteger(seq) || seq < 0 || !m) return fail(400, "bad_image", "미리보기 그림이 아닙니다");
+      const raw = Uint8Array.from(atob(m[1]), (c) => c.charCodeAt(0));
+      if (raw.length > MAX_THUMB || !sniffImage(raw)) return fail(400, "bad_image", "미리보기 그림이 아니거나 너무 큽니다");
+      const old = this.sql.exec<{ seq: number }>("SELECT seq FROM page_thumbs WHERE page_id = ?", pid).toArray()[0];
+      if (old && old.seq > seq) return json({ ok: true, skipped: true });
+      this.sql.exec("INSERT INTO page_thumbs (page_id, seq, data) VALUES (?, ?, ?) ON CONFLICT(page_id) DO UPDATE SET seq = excluded.seq, data = excluded.data",
+        pid, seq, raw);
+      return json({ ok: true });
+    }
+
+    /* 판서 기록: 교사 로그인 또는 PIN 을 푼 전자칠판 */
+    if (path.startsWith("/history/")) {
+      if (!elev) return needPin();
+      return this.history(req, path, url);
     }
     return fail(404, "not_available", "이 판에서는 아직 지원하지 않는 기능입니다");
+  }
+
+  /* ───────────── 판서 기록 ───────────── */
+
+  private async thumbUrl(pageId: number, seq: number): Promise<string> {
+    return `/eboard-api/thumbs/${pageId}?s=${await shortSig(this.cfg("secret")!, `thumb:${pageId}`)}&v=${seq}`;
+  }
+
+  /** 기록에 보일 페이지: 무엇이든 쓴 페이지 또는 자료를 깐 페이지 */
+  private static USED = "(p.last_seq > 0 OR p.bg_type IN ('image', 'pdf'))";
+
+  private storage() {
+    const db = this.sql.databaseSize;
+    return { db, budget: DB_BUDGET, media: this.media.usage() };
+  }
+
+  private async history(req: Request, path: string, url: URL): Promise<Response> {
+    const method = req.method;
+    if (path === "/history/sessions" && method === "GET") {
+      const day = (k: string, d: string) => (/^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get(k) ?? "") ? url.searchParams.get(k)! : d);
+      const end = day("end", kstNow().day), start = day("start", "0000-00-00");
+      const rows = this.sql.exec<Row>(
+        `SELECT s.*, (SELECT COUNT(*) FROM pages p WHERE p.session_id = s.id AND ${ClassRoom.USED}) AS used,
+           (SELECT p.id FROM pages p JOIN page_thumbs t ON t.page_id = p.id WHERE p.session_id = s.id AND ${ClassRoom.USED} ORDER BY p.page_no LIMIT 1) AS thumb_page,
+           (SELECT p.id FROM pages p WHERE p.session_id = s.id AND ${ClassRoom.USED} ORDER BY p.page_no LIMIT 1) AS first_page
+         FROM sessions s WHERE s.deleted = 0 AND s.day >= ? AND s.day <= ? ORDER BY s.day DESC, s.period_from`, start, end).toArray() as Json[];
+      const sessions = [];
+      for (const r of rows) {
+        if (!Number(r.used)) continue;                         // 아무것도 쓰지 않은 수업은 숨김
+        const tp = r.thumb_page ? Number(r.thumb_page) : 0;
+        const tseq = tp ? this.sql.exec<{ seq: number }>("SELECT seq FROM page_thumbs WHERE page_id = ?", tp).one().seq : 0;
+        sessions.push({ ...this.sessionMeta(r), pages: Number(r.used), joint: null, first_page: Number(r.first_page) || null,
+          started_at: new Date(Number(r.created_at) + 9 * 3600e3).toISOString().slice(11, 16),
+          thumb: tp ? await this.thumbUrl(tp, tseq) : null });
+      }
+      return json({ sessions, storage: this.storage() });
+    }
+    const one = /^\/history\/sessions\/(\d+)$/.exec(path);
+    if (one) {
+      const sess = this.getSession(Number(one[1]));
+      if (!sess || sess.deleted) return fail(404, "not_found", "기록이 없습니다");
+      if (method === "DELETE") {
+        if (this.room()?.session === sess.id) return fail(409, "in_use", "지금 칠판에 열려 있는 수업은 지울 수 없습니다. 다른 수업으로 옮긴 뒤 지우세요");
+        const ids = this.sql.exec<{ id: number }>("SELECT id FROM pages WHERE session_id = ?", sess.id).toArray().map((x) => x.id);
+        for (const id of ids) {
+          this.sql.exec("DELETE FROM ops WHERE page_id = ?", id);
+          this.sql.exec("DELETE FROM page_thumbs WHERE page_id = ?", id);
+          this.pages.delete(id);
+        }
+        this.sql.exec("DELETE FROM pages WHERE session_id = ?", sess.id);
+        this.sql.exec("DELETE FROM sessions WHERE id = ?", sess.id);
+        return json({ ok: true });
+      }
+      if (method !== "GET") return fail(405, "method", "지원하지 않는 요청입니다");
+      const k = this.klass();
+      const rows = this.sql.exec<{ id: number; page_no: number; w: number; h: number; last_seq: number; bg_type: string; tseq: number | null }>(
+        `SELECT p.id, p.page_no, p.w, p.h, p.last_seq, p.bg_type, t.seq AS tseq FROM pages p LEFT JOIN page_thumbs t ON t.page_id = p.id
+         WHERE p.session_id = ? AND ${ClassRoom.USED} ORDER BY p.page_no`, sess.id).toArray();
+      const pages = [];
+      for (const p of rows) {
+        pages.push({ id: p.id, page_no: p.page_no, w: p.w, h: p.h, seq: p.last_seq, bg: p.bg_type === "image" || p.bg_type === "pdf",
+          thumb: p.tseq !== null ? await this.thumbUrl(p.id, p.tseq) : null, image: null });
+      }
+      return json({ session: { ...this.sessionMeta(sess), grade: k.grade, class: k.class }, pages });
+    }
+    const st = /^\/history\/pages\/(\d+)\/(state|ops)$/.exec(path);
+    if (st && method === "GET") {
+      const ps = this.getPage(Number(st[1]));
+      if (!ps) return fail(404, "not_found", "페이지가 없습니다");
+      if (st[2] === "state") return json(ps.toClient());
+      // 판서 재생: 처음부터 모든 동작과 시각. 오래되어 동작 기록을 정리한 페이지는 완성된 판서를 한 번에.
+      const ops = this.sql.exec<{ seq: number; kind: string; obj_id: string | null; data: string | null; ts: number }>(
+        "SELECT seq, kind, obj_id, data, ts FROM ops WHERE page_id = ? ORDER BY seq", ps.id).toArray()
+        .map((o) => ({ s: o.seq, k: o.kind, id: o.obj_id, d: o.data ? JSON.parse(o.data) : null, t: o.ts }));
+      const complete = ops.length > 0 && ops[0].s === 1;
+      const out = complete ? ops : [...ps.objs.values()].map((o, i) => ({ s: i + 1, k: "add", id: (o as Json).id, d: o, t: 0 }));
+      return json({ page: ps.meta(), ops: out, replay: complete });
+    }
+    return fail(404, "not_found", "없는 기록입니다");
   }
 
   /* ───────────── WebSocket ───────────── */
@@ -724,7 +836,12 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
 
   async alarm(): Promise<void> {
     this.flushPages();
-    if (Math.random() < 0.05) this.media.sweep();       // 올리다 끊긴 자료 정리(가끔만)
+    if (Math.random() < 0.05) {                          // 가끔만: 올리다 끊긴 자료, 오래된 재생용 동작 기록 정리
+      this.media.sweep();
+      for (const ps of this.pages.values()) if (ps.seq > ps.saved_seq) this.savePage(ps);
+      this.sql.exec(`DELETE FROM ops WHERE ts < ? AND seq <= (SELECT state_seq FROM pages WHERE pages.id = ops.page_id)`,
+        Date.now() - OPS_KEEP_DAYS * 86400e3);
+    }
     this.expireGrants();
     if (this.joinedSockets().length) {
       const prevRoom = this.room();

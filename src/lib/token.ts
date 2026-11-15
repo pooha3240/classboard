@@ -116,3 +116,10 @@ export async function sha256(text: string): Promise<string> {
   const h = await crypto.subtle.digest("SHA-256", enc.encode(text));
   return [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
+
+/** 짧은 서명(그림 주소용): HMAC-SHA256 앞 16자 */
+export async function shortSig(secret: string, msg: string): Promise<string> {
+  const k = await hmacKey(secret);
+  const s = new Uint8Array(await crypto.subtle.sign("HMAC", k, enc.encode(msg)));
+  return b64e(s).slice(0, 16);
+}

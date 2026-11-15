@@ -55,7 +55,13 @@ export function imageMeta(a: Asset) {
 const kst = (t: number) => new Date(t + 9 * 3600e3).toISOString().slice(5, 16).replace("-", "/").replace("T", " ");
 
 export class MediaStore {
-  constructor(private sql: SqlStorage) {}
+  /** dbSize: 객체 전체 크기(판서 기록 포함). 자료는 MEDIA_QUOTA 와 '전체 예산 - 판서 기록' 중 작은 쪽까지 */
+  constructor(private sql: SqlStorage, private budget = { total: Infinity, dbSize: () => 0 }) {}
+
+  quota(): number {
+    const other = Math.max(0, this.budget.dbSize() - this.usage());
+    return Math.max(0, Math.min(MEDIA_QUOTA, this.budget.total - other));
+  }
 
   migrate(): void {
     this.sql.exec(`
@@ -107,21 +113,22 @@ export class MediaStore {
       const first = this.setOf(r.set_id)[0];
       return { asset: first.id, kind: r.kind, name: r.name ?? "", pages: r.n, created: kst(r.created_at), thumb: fileUrl(first, first.thumb_mime !== null) };
     });
-    return { files, usage: this.usage(), quota: MEDIA_QUOTA };
+    return { files, usage: this.usage(), quota: this.quota() };
   }
 
   /** 자리가 모자라면 오래 안 쓴 자료부터 지움(지금 올리는 묶음은 빼고) */
   private makeRoom(need: number, keepSet: number): void {
     let used = this.usage();
-    if (used + need <= MEDIA_QUOTA) return;
+    const quota = this.quota();
+    if (used + need <= quota) return;
     const sets = this.sql.exec<{ set_id: number; n: number }>(
       "SELECT set_id, SUM(bytes) AS n FROM assets WHERE set_id != ? GROUP BY set_id ORDER BY MAX(used_at) ASC", keepSet).toArray();
     for (const s of sets) {
-      if (used + need <= MEDIA_QUOTA) break;
+      if (used + need <= quota) break;
       this.deleteSet(s.set_id);
       used -= s.n;
     }
-    if (used + need > MEDIA_QUOTA) throw new MediaError(507, "full", "저장 공간이 모자랍니다. 파일을 나눠 올려 주세요");
+    if (used + need > quota) throw new MediaError(507, "full", "저장 공간이 모자랍니다. 파일을 나눠 올려 주세요");
   }
 
   /**

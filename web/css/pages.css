@@ -115,3 +115,4 @@ body.plan-body .pl-swap:not([hidden]) ~ .pl-grid .slot { cursor: crosshair; }
 .pd-recent[hidden] { display: none; }
 .pl-neis { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 6px 0; }
 .pl-neis[hidden] { display: none; }
+.storage-line { padding: 8px 20px 24px; text-align: center; }

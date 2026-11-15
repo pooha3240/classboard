@@ -78,13 +78,12 @@ async function snapshot(page, objs, seq) {
   snapSeq.set(page.id, seq);
   try {
     await loadBgImage(page);
-    const full = await canvasToWebp(renderPageCanvas(objs, page.w, page.h, 1600, page));
     const thumb = await canvasToWebp(renderPageCanvas(objs, page.w, page.h, 400, page), 0.8);
-    if (!full || !thumb) return;
+    if (!thumb) return;                                // 기본판: 기록 목록용 미리보기만 올림
     const t = net.lastToken || await net.token();
     const r = await fetch(`/eboard-api/pages/${page.id}/snapshot`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + t },
-      body: JSON.stringify({ seq, full, thumb }),
+      body: JSON.stringify({ seq, thumb }),
     });
     if (!r.ok) snapSeq.delete(page.id);
   } catch { snapSeq.delete(page.id); }
@@ -193,7 +192,7 @@ async function elevate(why) {
 
 // 기록·설정 화면으로: 등록 전자칠판은 PIN 을 먼저
 async function goPage(file) {
-  if (deviceKey && !(await elevate(file === 'history.php' ? '판서 기록을 보려면 PIN 이 필요합니다' : '설정을 바꾸려면 PIN 이 필요합니다'))) return;
+  if (deviceKey && !(await elevate(file === 'history.html' ? '판서 기록을 보려면 PIN 이 필요합니다' : '설정을 바꾸려면 PIN 이 필요합니다'))) return;
   // 기록에 지금 판서가 바로 보이도록 스냅샷을 올린 뒤 이동(최대 3초)
   await Promise.race([snapshotCurrent(), new Promise((r) => setTimeout(r, 3000))]);
   const q = klass ? `?grade=${klass.grade}&class=${klass.class}` : '';
@@ -596,7 +595,7 @@ $('#menu-new-session').addEventListener('click', async () => {
   const r = await net.call('session:new', {}).catch(() => null);
   if (!r || !r.ok) toast('새 수업을 시작하지 못했습니다');
 });
-$('#menu-history').addEventListener('click', () => goPage('history.php'));
+$('#menu-history').addEventListener('click', () => goPage('history.html'));
 $('#menu-settings').addEventListener('click', () => goPage('settings.php'));
 $('#menu-plan').addEventListener('click', () => goPage('plan.php'));
 $('#menu-pos').addEventListener('click', () => {
