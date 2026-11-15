@@ -17,7 +17,7 @@ export class TodayPanel {
         <div class="td-list" id="td-list"></div>
         <div class="td-meal" id="td-meal" hidden></div>
         <div class="td-bar" id="td-bar" hidden><span id="td-msg"></span><button type="button" class="chip" id="td-cancel">취소</button><button type="button" class="ct-big" id="td-swap">바꾸기</button></div>
-        <div class="td-foot"><button type="button" class="chip" id="td-media" hidden>지금 차시 자료 열기</button><a class="chip" id="td-plan" href="plan.php">주간 진도에서 더 고치기 ›</a></div>
+        <div class="td-foot"><button type="button" class="chip" id="td-media" hidden>지금 차시 자료 열기</button><a class="chip" id="td-plan" href="plan.html">주간 진도에서 더 고치기 ›</a></div>
       </div>`;
     document.body.appendChild(el);
     this.el = el;
@@ -41,7 +41,7 @@ export class TodayPanel {
   async open() {
     const k = this.getClass();
     if (!k) return;
-    $('#td-plan', this.el).href = `plan.php?grade=${k.grade}&class=${k.class}`;
+    $('#td-plan', this.el).href = `plan.html?grade=${k.grade}&class=${k.class}`;
     try {
       this.data = await this._api(`/plan/today?grade=${k.grade}&class=${k.class}`);
     } catch (e) { this.toast(e.message); return; }

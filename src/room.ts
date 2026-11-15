@@ -13,6 +13,7 @@
  *   "ping" → "pong" 은 자동 응답(DO를 깨우지 않음)
  */
 import { DurableObject } from "cloudflare:workers";
+import { PlanStore, PlanError } from "./plan";
 import { MediaStore, MediaError, MAX_PDF_PAGES, imageMeta, pageSizeFor, sniffImage } from "./media";
 import { sign, verify, TokenError, randomKey, hashPassword, checkPassword, sha256, shortSig, type TokenPayload } from "./lib/token";
 import { currentPeriod, kstNow, nextBoundary, periodLabel, normalize, type Bell } from "./lib/periods";
@@ -21,7 +22,7 @@ import {
   validateObj, cleanWebUrl, cleanColor, num, type Obj,
 } from "./lib/validate";
 
-export const SERVER_VERSION = "0.7.0";
+export const SERVER_VERSION = "0.8.0";
 
 const TEACHER_DEVICES = new Set(["display", "teacher-pc", "teacher-tablet"]);
 const TOKEN_DAYS = 30;
@@ -75,6 +76,7 @@ class PageState {
   objs = new Map<string, Obj>();     // 넣은 순서 = 그리는 순서
   authors = new Map<string, string>();
   seq: number; saved_seq: number; last_change = 0;
+  play: { playing: boolean; pos: number; at: number } | null = null;   // 유튜브 배경 재생 상태(메모리에서만)
 
   constructor(r: PageRow) {
     this.id = r.id; this.session_id = r.session_id; this.page_no = r.page_no; this.w = r.w; this.h = r.h;
@@ -93,7 +95,7 @@ class PageState {
   meta(): Json {
     return { id: this.id, page_no: this.page_no, w: this.w, h: this.h, bg_type: this.bg_type,
       bg_meta: this.bg_meta, bg_url: (this.bg_type === "image" || this.bg_type === "pdf") ? (this.bg_meta.url as string) ?? null : null,
-      bg_color: this.bg_color, play: null };
+      bg_color: this.bg_color, play: this.play ? { ...this.play, now: Date.now() / 1000 } : null };
   }
   toClient(): Json { return { ...this.meta(), seq: this.seq, objs: [...this.objs.values()] }; }
 }
@@ -108,6 +110,7 @@ const fail = (status: number, error: string, message: string) => json({ detail: 
 export class ClassRoom extends DurableObject<Record<string, unknown>> {
   private sql: SqlStorage;
   private media: MediaStore;
+  private plan: PlanStore;
   private pages = new Map<number, PageState>();
   private loginFails = { n: 0, until: 0 };
   private pinFails = new Map<number, { n: number; until: number }>();
@@ -115,7 +118,8 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
   constructor(ctx: DurableObjectState, env: Record<string, unknown>) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
-    this.media = new MediaStore(this.sql, { total: DB_BUDGET, dbSize: () => this.sql.databaseSize });
+    this.media = new MediaStore(this.sql, { total: DB_BUDGET, dbSize: () => this.sql.databaseSize, pinned: () => this.plan.pinnedSets() });
+    this.plan = new PlanStore(this.sql, this.media);
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
     ctx.blockConcurrencyWhile(async () => this.migrate());
   }
@@ -150,6 +154,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
         expires INTEGER NOT NULL, done INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
     `);
     this.media.migrate();
+    this.plan.migrate();
     this.sql.exec(`CREATE TABLE IF NOT EXISTS timetable (weekday INTEGER NOT NULL, period INTEGER NOT NULL, subject TEXT NOT NULL, PRIMARY KEY (weekday, period))`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS page_thumbs (page_id INTEGER PRIMARY KEY, seq INTEGER NOT NULL, data BLOB NOT NULL)`);
   }
@@ -479,6 +484,14 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       this.sql.exec("DELETE FROM arrangements WHERE id = ?", Number(del[1]));
       return json({ ok: true });
     }
+    /* 진도표·차시 자료 */
+    if (path.startsWith("/plan/")) {
+      try { return await this.planRest(req, path, url, elev); } catch (e) {
+        if (e instanceof PlanError) return fail(e.status, e.code, e.message);
+        throw e;
+      }
+    }
+
     /* 교시 시각·학급 시간표 */
     if (path === "/settings/bells" && method === "GET") {
       const rows = this.bells();
@@ -594,6 +607,45 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       return this.history(req, path, url);
     }
     return fail(404, "not_available", "이 판에서는 아직 지원하지 않는 기능입니다");
+  }
+
+  /* ───────────── 진도표 ───────────── */
+
+  private async planRest(req: Request, path: string, url: URL, elev: boolean): Promise<Response> {
+    const method = req.method;
+    const today = kstNow().day;
+    if (method === "GET") {
+      if (path === "/plan/week") return json(this.plan.week(url.searchParams.get("date") ?? "", today));
+      if (path === "/plan/terms") return json(this.plan.terms());
+      if (path === "/plan/media") return json(this.plan.mediaList(url.searchParams.get("lkey") ?? ""));
+      if (path === "/plan/now") { const s = this.slot(); return json(this.plan.now(s.day, s.period)); }
+      return fail(404, "not_found", "없는 요청입니다");
+    }
+    if (!elev) return fail(403, "pin_required", "PIN 이 필요합니다");
+    const body = async () => (await req.json().catch(() => ({}))) as Json;
+    if (path === "/plan/upload" && method === "POST") {
+      if (Number(req.headers.get("content-length") ?? 0) > 3 * 1024 * 1024) return fail(413, "too_large", "파일 내용이 너무 큽니다");
+      const kind = url.searchParams.get("kind"), force = url.searchParams.get("force") === "1";
+      const r = kind === "timetable" ? await this.plan.uploadTt(await body(), this.klass(), force)
+        : await this.plan.uploadPlan(await body(), this.klass(), force, url.searchParams.get("name") ?? "");
+      this.relabelSessions([today]);
+      return json(r);
+    }
+    const slot = /^\/plan\/slot\/(\d+)$/.exec(path);
+    if (slot && method === "POST") { this.relabelSessions(this.plan.slotAction(Number(slot[1]), await body())); return json({ ok: true }); }
+    if (path === "/plan/swap" && method === "POST") {
+      const b = await body();
+      this.relabelSessions(this.plan.swap(Number(b.a), Number(b.b)));
+      return json({ ok: true });
+    }
+    const les = /^\/plan\/lesson\/(\d+)$/.exec(path);
+    if (les && method === "POST") { this.relabelSessions(this.plan.lessonAction(Number(les[1]), await body())); return json({ ok: true }); }
+    if (path === "/plan/media" && method === "POST") return json(this.plan.mediaAdd(await body(), cleanWebUrl));
+    const mv = /^\/plan\/media\/(\d+)\/move$/.exec(path);
+    if (mv && method === "POST") return json(this.plan.mediaMove(Number(mv[1]), Number((await body()).dir)));
+    const md = /^\/plan\/media\/(\d+)$/.exec(path);
+    if (md && method === "DELETE") return json(this.plan.mediaDel(Number(md[1])));
+    return fail(404, "not_found", "없는 요청입니다");
   }
 
   /* ───────────── 판서 기록 ───────────── */
@@ -792,12 +844,37 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
     return this.sql.exec<{ subject: string }>("SELECT subject FROM timetable WHERE weekday = ? AND period = ?", wd, period).toArray()[0]?.subject ?? "";
   }
 
+  /** 새 수업: 진도표가 있으면 과목·차시 이름을 붙이고 차시 자료를 페이지로 깝니다(없으면 학급 시간표의 과목). */
   private createSession(day: string, period: number): Json {
+    const info = this.plan.sessionInfo(day, period);
     const id = this.sql.exec<{ id: number }>(
-      "INSERT INTO sessions (day, period_from, period_to, subject, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id",
-      day, period, period, this.subjectFor(day, period), Date.now()).one().id;
-    this.createPage(id);
+      "INSERT INTO sessions (day, period_from, period_to, subject, lesson, created_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+      day, period, period, info?.subject || this.subjectFor(day, period), info?.lesson ?? "", Date.now()).one().id;
+    const pages = info?.items.length ? this.plan.pagesFor(info.items, imageMeta, pageSizeFor, cleanWebUrl) : [];
+    if (!pages.length) { this.createPage(id); return this.getSession(id)!; }
+    let first = 0;
+    for (const pg of pages) {
+      const pid = this.createPage(id);
+      this.sql.exec("UPDATE pages SET w = ?, h = ?, bg_type = ?, bg_meta = ? WHERE id = ?", pg.w, pg.h, pg.bg_type, JSON.stringify(pg.bg_meta), pid);
+      first = first || pid;
+    }
+    this.sql.exec("UPDATE pages SET updated_at = ? WHERE id = ?", Date.now() + 1000, first);   // 첫 자료 페이지가 열리게
     return this.getSession(id)!;
+  }
+
+  /** 진도 조정 뒤: 이미 만든 판서(오늘까지)의 과목·차시 이름을 고치고, 열려 있는 칠판에 알림 */
+  private relabelSessions(dates: string[]): void {
+    const today = kstNow().day;
+    const days = [...new Set([...dates, today])].filter((d) => d <= today);
+    for (const d of days) {
+      for (const r of this.sql.exec<{ id: number; period_from: number; subject: string; lesson: string }>(
+        "SELECT id, period_from, subject, lesson FROM sessions WHERE day = ? AND deleted = 0 AND period_from BETWEEN 1 AND 9", d).toArray()) {
+        const info = this.plan.sessionInfo(d, r.period_from);
+        if (!info || (info.subject === r.subject && info.lesson === r.lesson)) continue;
+        this.sql.exec("UPDATE sessions SET subject = ?, lesson = ? WHERE id = ?", info.subject, info.lesson, r.id);
+        if (this.room()?.session === r.id) this.emit("session:meta", { session: this.sessionMeta(this.getSession(r.id)!) });
+      }
+    }
   }
 
   private resolveSession(day: string, period: number): Json {
@@ -1190,10 +1267,27 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
           bg = asset.kind === "pdf" ? "pdf" : "image";
           this.media.touch([asset.set_id]);
         }
-        else return { ok: false, error: "not_available" };     // 동영상 파일 배경은 저장판에서
-        ps.bg_type = bg; ps.bg_meta = meta;
+        else if (bg === "video") {
+          // 기본판: 유튜브만(동영상 파일은 저장판). 각 기기가 직접 재생하고 진행 기기가 재생·멈춤을 맞춤
+          const yt = String(metaIn.yt ?? "");
+          if (!/^[\w-]{11}$/.test(yt)) return { ok: false, error: "not_available" };
+          meta = { src: "yt", yt, start: Math.round(num(metaIn.start ?? 0, 0, 86400)) };
+        }
+        else return { ok: false, error: "not_available" };
+        ps.bg_type = bg; ps.bg_meta = meta; ps.play = null;
         this.sql.exec("UPDATE pages SET bg_type = ?, bg_meta = ?, updated_at = ? WHERE id = ?", bg, JSON.stringify(meta), Date.now(), ps.id);
         this.emit("page:bg", { page_id: ps.id, bg_type: bg, bg_meta: meta, bg_url: ps.meta().bg_url, play: null });
+        return { ok: true };
+      }
+
+      case "video:ctl": {
+        this.requireTeacherInRoom(a);
+        const ps = this.sessionPage(d.page_id);
+        const action = String(d.action);
+        if (!["play", "pause", "seek"].includes(action) || ps.bg_type !== "video") return { ok: false, error: "bad_request" };
+        const playing = action === "play" || (action === "seek" && !!ps.play?.playing);
+        ps.play = { playing, pos: Math.round(num(d.pos ?? 0, 0, 86400) * 100) / 100, at: Date.now() / 1000 };
+        this.emit("video:state", { page_id: ps.id, play: ps.meta().play });
         return { ok: true };
       }
 

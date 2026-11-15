@@ -207,7 +207,7 @@ async function elevate(why) {
 
 // 기록·설정 화면으로: 등록 전자칠판은 PIN 을 먼저
 async function goPage(file) {
-  if (deviceKey && !(await elevate(file === 'history.html' ? '판서 기록을 보려면 PIN 이 필요합니다' : '교시·시간표를 바꾸려면 PIN 이 필요합니다'))) return;
+  if (deviceKey && !(await elevate(file === 'history.html' ? '판서 기록을 보려면 PIN 이 필요합니다' : file === 'plan.html' ? '진도표를 보려면 PIN 이 필요합니다' : '교시·시간표를 바꾸려면 PIN 이 필요합니다'))) return;
   // 기록에 지금 판서가 바로 보이도록 스냅샷을 올린 뒤 이동(최대 3초)
   await Promise.race([snapshotCurrent(), new Promise((r) => setTimeout(r, 3000))]);
   const q = klass ? `?grade=${klass.grade}&class=${klass.class}` : '';
@@ -612,7 +612,7 @@ $('#menu-new-session').addEventListener('click', async () => {
 });
 $('#menu-history').addEventListener('click', () => goPage('history.html'));
 $('#menu-settings').addEventListener('click', () => goPage('settings.html'));
-$('#menu-plan').addEventListener('click', () => goPage('plan.php'));
+$('#menu-plan').addEventListener('click', () => goPage('plan.html'));
 $('#menu-pos').addEventListener('click', () => {
   const bottom = document.body.classList.toggle('bar-bottom'); store.set('barBottom', bottom);
   $('#menu').hidden = true;

@@ -39,6 +39,72 @@ export function probeVideo(file) {
   });
 }
 
+
+// 사진·PDF 를 이 기기에서 바꿔 올림(서버는 보관만). 진도표 화면에서도 씀.
+// onProgress(pct, text). 성공하면 {kind, name, items}, 실패하면 Error 를 던짐.
+const HOW = {
+  ppt: 'PowerPoint: 파일 → 내보내기 → PDF/XPS 만들기', pptx: 'PowerPoint: 파일 → 내보내기 → PDF/XPS 만들기',
+  hwp: '한글: 파일 → PDF로 저장하기', hwpx: '한글: 파일 → PDF로 저장하기',
+  doc: 'Word: 파일 → 다른 이름으로 저장 → PDF', docx: 'Word: 파일 → 다른 이름으로 저장 → PDF',
+  xls: 'Excel: 파일 → 내보내기 → PDF/XPS 만들기', xlsx: 'Excel: 파일 → 내보내기 → PDF/XPS 만들기',
+  key: 'Keynote: 파일 → 보내기 → PDF', odp: '파일 → PDF로 내보내기', odt: '파일 → PDF로 내보내기',
+};
+export async function uploadFile(file, { kind = 'file', token, onProgress = () => {} }) {
+  const ext = (String(file.name || '').match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase();
+  if (HOW[ext]) throw new Error(`${ext.toUpperCase()} 파일은 PDF로 저장해서 올려 주세요 (${HOW[ext]})`);
+  if (isVideoFile(file)) throw new Error('기본판에서는 동영상 파일을 올릴 수 없습니다. 유튜브(일부 공개)에 올려 주소로 띄워 주세요');
+  if (file.size > 100 * MB) throw new Error('파일이 너무 큽니다 (최대 100MB)');
+  const isPdf = file.type === 'application/pdf' || ext === 'pdf';
+  const akind = isPdf ? 'pdf' : (kind === 'capture' ? 'capture' : 'image');
+  const name = file.name || '';
+  const label = kind === 'capture' ? '캡처' : (name || '그림');
+  const api = async (path) => {
+    const r = await fetch('/eboard-api' + path, { headers: { Authorization: 'Bearer ' + token } });
+    return r.ok ? r.json() : null;
+  };
+  onProgress(0, `${label} 여는 중…`);
+  let pdf = null;
+  try {
+    const buf = await file.arrayBuffer();
+    let sha = '';
+    if (akind !== 'capture') {                       // 같은 파일을 전에 올렸으면 그대로 다시 씀
+      sha = await sha256Hex(buf);
+      const f = await api(`/media/find?sha=${sha}&kind=${akind}`).catch(() => null);
+      if (f && f.items) { onProgress(100, '전에 올린 자료를 다시 씁니다'); return f; }
+    }
+    let n = 1, getPage;
+    if (isPdf) {
+      pdf = await openPdf(buf);
+      n = pdf.pages;
+      if (n < 1) throw new Error('빈 PDF 입니다');
+      if (n > 60) throw new Error(`PDF 가 ${n}쪽입니다. 60쪽 이하로 나눠 올려 주세요`);
+      getPage = (i) => pdf.page(i);
+    } else getPage = () => convertImage(file);
+    const items = [];
+    let set = 0;
+    for (let i = 0; i < n; i++) {
+      onProgress((i / n) * 100, n > 1 ? `${label} 바꿔서 올리는 중… ${i + 1}/${n}쪽` : `${label} 올리는 중…`);
+      const pg = await getPage(i);
+      const q = new URLSearchParams({ set: String(set), i: String(i), n: String(n), kind: akind, name, sha, w: String(pg.w), h: String(pg.h) });
+      let r, j = {};
+      for (let attempt = 0; attempt < 3; attempt++) {           // 학교망이 잠깐 끊겨도 한 쪽만 다시
+        r = await fetch(`/eboard-api/media/upload?${q}`, {
+          method: 'POST', headers: { Authorization: 'Bearer ' + token, 'x-thumb-len': String(pg.thumb.size) },
+          body: new Blob([pg.thumb, pg.blob]),
+        }).catch(() => null);
+        if (r) { j = await r.json().catch(() => ({})); if (r.ok || r.status < 500) break; }
+        await new Promise((res) => setTimeout(res, 800 * (attempt + 1)));
+      }
+      if (!r) throw new Error('네트워크 오류로 올리지 못했습니다');
+      if (!r.ok) throw new Error((j.detail && j.detail.message) || `올리지 못했습니다 (${r.status})`);
+      set = j.set;
+      items.push(j.item);
+    }
+    onProgress(100, '완료');
+    return { kind: akind, name, items };
+  } finally { if (pdf) pdf.close(); }
+}
+
 export class MediaTools {
   constructor({ net, board, renderer, toast }) {
     this.net = net; this.board = board; this.r = renderer; this.toast = toast;
@@ -136,7 +202,7 @@ export class MediaTools {
   async loadLesson() {
     const box = $('#md-lesson', this.panel), k = this.getClass && this.getClass();
     box.hidden = true;
-    if (!k || !this.planEnabled) return;              // 기본판: 주간 진도·차시 자료 없음
+    if (!k) return;
     try {
       const j = await this._api(`/plan/now?grade=${k.grade}&class=${k.class}`);
       this.lessonItems = j.items || [];
@@ -215,76 +281,17 @@ export class MediaTools {
 
   async upload(file, kind = 'file') {
     if (this.busy) { this.toast('앞의 파일을 올리는 중입니다'); return null; }
-    // 문서 파일은 바꾸지 않습니다: 선생님 PC 에서 PDF 로 저장해 올리도록 안내
-    const ext = (String(file.name || '').match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase();
-    const HOW = {
-      ppt: 'PowerPoint: 파일 → 내보내기 → PDF/XPS 만들기', pptx: 'PowerPoint: 파일 → 내보내기 → PDF/XPS 만들기',
-      hwp: '한글: 파일 → PDF로 저장하기', hwpx: '한글: 파일 → PDF로 저장하기',
-      doc: 'Word: 파일 → 다른 이름으로 저장 → PDF', docx: 'Word: 파일 → 다른 이름으로 저장 → PDF',
-      xls: 'Excel: 파일 → 내보내기 → PDF/XPS 만들기', xlsx: 'Excel: 파일 → 내보내기 → PDF/XPS 만들기',
-      key: 'Keynote: 파일 → 보내기 → PDF', odp: '파일 → PDF로 내보내기', odt: '파일 → PDF로 내보내기',
-    };
-    if (HOW[ext]) { this.toast(`${ext.toUpperCase()} 파일은 PDF로 저장해서 올려 주세요 (${HOW[ext]})`, 6000); return null; }
-    if (isVideoFile(file)) { this.toast('기본판에서는 동영상 파일을 올릴 수 없습니다. 유튜브(일부 공개)에 올려 주소로 띄워 주세요', 6000); return null; }
-    if (file.size > 100 * MB) { this.toast('파일이 너무 큽니다 (최대 100MB)'); return null; }
-    const isPdf = file.type === 'application/pdf' || ext === 'pdf';
-    const akind = isPdf ? 'pdf' : (kind === 'capture' ? 'capture' : 'image');
-    const name = file.name || '';
-    const label = kind === 'capture' ? '캡처' : (name || '그림');
     this.busy = true;
     if (kind !== 'capture') this.panel.hidden = false;
-    this._progress(0, `${label} 여는 중…`);
-    let pdf = null;
     try {
-      const buf = await file.arrayBuffer();
-      let sha = '';
-      if (akind !== 'capture') {                       // 같은 파일을 전에 올렸으면 그대로 다시 씀
-        sha = await sha256Hex(buf);
-        const f = await this._api(`/media/find?sha=${sha}&kind=${akind}`).catch(() => null);
-        if (f && f.items) { this._progress(100, '전에 올린 자료를 다시 씁니다'); setTimeout(() => this._progress(null), 800); return f; }
-      }
-      let n = 1, getPage;
-      if (isPdf) {
-        pdf = await openPdf(buf);
-        n = pdf.pages;
-        if (n < 1) throw new Error('빈 PDF 입니다');
-        if (n > 60) throw new Error(`PDF 가 ${n}쪽입니다. 60쪽 이하로 나눠 올려 주세요`);
-        getPage = (i) => pdf.page(i);
-      } else {
-        getPage = () => convertImage(file);
-      }
-      const token = await this._token();
-      const items = [];
-      let set = 0;
-      for (let i = 0; i < n; i++) {
-        this._progress((i / n) * 100, n > 1 ? `${label} 바꿔서 올리는 중… ${i + 1}/${n}쪽` : `${label} 올리는 중…`);
-        const pg = await getPage(i);
-        const q = new URLSearchParams({ set: String(set), i: String(i), n: String(n), kind: akind, name, sha, w: String(pg.w), h: String(pg.h) });
-        let r, j = {};
-        for (let attempt = 0; attempt < 3; attempt++) {           // 학교망이 잠깐 끊겨도 한 쪽만 다시
-          r = await fetch(`/eboard-api/media/upload?${q}`, {
-            method: 'POST', headers: { Authorization: 'Bearer ' + token, 'x-thumb-len': String(pg.thumb.size) },
-            body: new Blob([pg.thumb, pg.blob]),
-          }).catch(() => null);
-          if (r) { j = await r.json().catch(() => ({})); if (r.ok || r.status < 500) break; }
-          await new Promise((res) => setTimeout(res, 800 * (attempt + 1)));
-        }
-        if (!r) throw new Error('네트워크 오류로 올리지 못했습니다');
-        if (!r.ok) throw new Error((j.detail && j.detail.message) || `올리지 못했습니다 (${r.status})`);
-        set = j.set;
-        items.push(j.item);
-      }
-      this._progress(100, '완료');
+      const res = await uploadFile(file, { kind, token: await this._token(), onProgress: (p, t) => this._progress(p, t) });
       setTimeout(() => this._progress(null), 800);
-      return { kind: akind, name, items };
+      return res;
     } catch (e) {
       this._progress(null);
       this.toast(e.message || '올리지 못했습니다', 5000);
       return null;
-    } finally {
-      if (pdf) pdf.close();
-      this.busy = false;
-    }
+    } finally { this.busy = false; }
   }
 
   async uploadAndPick(file) {

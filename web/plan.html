@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>주간 진도·차시 자료</title>
+<link rel="stylesheet" href="css/board.css?v=0.8.0">
+<link rel="stylesheet" href="css/pages.css?v=0.8.0">
+</head>
+<body class="page-body plan-body" data-login="login.html">
+  <header class="page-top">
+    <a class="chip" href="./">‹ 칠판</a>
+    <h1>주간 진도</h1>
+    <span id="pl-class" class="muted"></span>
+    <div class="month">
+      <button id="pl-prev" type="button" class="chip" aria-label="지난주">‹</button>
+      <button id="pl-today" type="button" class="chip">이번 주</button>
+      <span id="pl-range"></span>
+      <button id="pl-next" type="button" class="chip" aria-label="다음 주">›</button>
+    </div>
+    <button id="pl-upload-toggle" type="button" class="chip">나이스 파일 올리기</button>
+  </header>
+
+  <main class="plan">
+    <section id="pl-upload" class="panel" hidden>
+      <h2>나이스 파일 올리기</h2>
+      <ol class="muted small pl-steps">
+        <li><b>교육과정 연간지도계획</b>(엑셀): 과목·단원·학습주제·차시. 학기마다 올립니다.</li>
+        <li><b>학기별 시간표 조회</b>(PDF, 선택): 날짜마다 몇 교시에 무슨 과목인지. 올리면 교시가 정확해집니다. 없으면 진도표의 하루 순서를 교시로 씁니다.</li>
+      </ol>
+      <p class="muted small">파일은 이 기기에서 읽고 내용(글자)만 보냅니다. 다시 올리면 그 학기 진도를 새로 맞추고, 이 화면에서 바꾼 교체·없음·한 번 더와 차시 자료는 다시 적용합니다(나이스 시간표에서 이미 바뀐 시간은 건너뜀).</p>
+      <div class="pl-drop" id="pl-drop">
+        <input type="file" id="pl-file" accept=".xlsx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple hidden>
+        <button type="button" class="ct-big" id="pl-pick">파일 고르기 (엑셀·PDF)</button>
+        <span class="muted small">또는 여기로 끌어다 놓기</span>
+      </div>
+      <div id="pl-neis" class="pl-neis" hidden>
+        <button type="button" class="chip primary" id="pl-neis-btn">나이스에서 시간표 지금 받아오기</button>
+        <span class="muted small" id="pl-neis-st"></span>
+      </div>
+      <div id="pl-result" class="pl-result"></div>
+      <div id="pl-terms" class="muted small"></div>
+    </section>
+
+    <div id="pl-swap" class="pl-swap" hidden>바꿀 시간을 누르세요 <button type="button" class="chip" id="pl-swap-cancel">취소</button></div>
+    <div id="pl-grid" class="pl-grid"></div>
+    <section id="pl-extra" class="pl-extra"></section>
+  </main>
+
+  <dialog id="pl-dlg" class="sheet pl-dlg">
+    <div class="sheet-top">
+      <h2 id="pd-title"></h2>
+      <div class="actions"><button type="button" class="chip" id="pd-close">닫기</button></div>
+    </div>
+    <div class="pd-body">
+      <div id="pd-lesson" class="pd-lesson"></div>
+      <div class="pd-acts" id="pd-acts"></div>
+      <h3>차시 자료 <span class="muted small">이 시간이 되면 전자칠판이 자료를 페이지로 깔아 두고 시작합니다</span></h3>
+      <div id="pd-media" class="pd-media"></div>
+      <div class="pd-add" id="pd-add">
+        <input type="file" id="pd-file" accept="image/*,.heic,.heif,.pdf,application/pdf" hidden>
+        <button type="button" class="chip primary" id="pd-upload">파일 올리기 (PDF·사진)</button>
+        <button type="button" class="chip" id="pd-recent-btn">최근 자료에서</button>
+        <span class="pd-url"><input type="text" id="pd-url" placeholder="유튜브·웹페이지 주소"><button type="button" class="chip" id="pd-url-add">붙이기</button></span>
+      </div>
+      <div id="pd-progress" class="muted small"></div>
+      <p class="muted small">차시에 붙인 사진·PDF 는 자동으로 지워지지 않습니다(모두 합쳐 300MB 까지). 동영상은 유튜브 주소로 붙이세요.</p>
+      <div id="pd-recent" class="pd-recent" hidden></div>
+    </div>
+  </dialog>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="js/plan.js?v=0.8.0"></script>
+</body>
+</html>

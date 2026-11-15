@@ -56,7 +56,7 @@ const kst = (t: number) => new Date(t + 9 * 3600e3).toISOString().slice(5, 16).r
 
 export class MediaStore {
   /** dbSize: 객체 전체 크기(판서 기록 포함). 자료는 MEDIA_QUOTA 와 '전체 예산 - 판서 기록' 중 작은 쪽까지 */
-  constructor(private sql: SqlStorage, private budget = { total: Infinity, dbSize: () => 0 }) {}
+  constructor(private sql: SqlStorage, private budget: { total: number; dbSize: () => number; pinned?: () => Set<number> } = { total: Infinity, dbSize: () => 0 }) {}
 
   quota(): number {
     const other = Math.max(0, this.budget.dbSize() - this.usage());
@@ -121,9 +121,11 @@ export class MediaStore {
     let used = this.usage();
     const quota = this.quota();
     if (used + need <= quota) return;
+    const pinned = this.budget.pinned ? this.budget.pinned() : new Set<number>();      // 차시에 붙인 자료는 지우지 않음
     const sets = this.sql.exec<{ set_id: number; n: number }>(
       "SELECT set_id, SUM(bytes) AS n FROM assets WHERE set_id != ? GROUP BY set_id ORDER BY MAX(used_at) ASC", keepSet).toArray();
     for (const s of sets) {
+      if (pinned.has(s.set_id)) continue;
       if (used + need <= quota) break;
       this.deleteSet(s.set_id);
       used -= s.n;

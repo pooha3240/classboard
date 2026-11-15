@@ -70,13 +70,15 @@ async function pdfjs() {
 export async function openPdf(buf) {
   const lib = await pdfjs();
   let doc;
-  try {
-    doc = await lib.getDocument({
+  const task = lib.getDocument({
       data: new Uint8Array(buf), cMapUrl: PDFJS + 'cmaps/', cMapPacked: true,
       standardFontDataUrl: PDFJS + 'standard_fonts/', wasmUrl: PDFJS + 'wasm/', iccUrl: PDFJS + 'iccs/',
       isEvalSupported: false, enableXfa: false,
-    }).promise;
+  });
+  try {
+    doc = await task.promise;
   } catch (e) {
+    task.destroy();
     if (e && e.name === 'PasswordException') throw new Error('암호가 걸린 PDF 입니다. 암호를 푼 PDF 로 저장해 올려 주세요');
     throw new Error('PDF 를 열 수 없습니다 (손상된 파일일 수 있습니다)');
   }
@@ -97,6 +99,6 @@ export async function openPdf(buf) {
       c.width = c.height = 0;
       return out;
     },
-    close() { try { doc.destroy(); } catch { /* 무시 */ } },
+    close() { try { task.destroy(); } catch { /* 무시 */ } },
   };
 }

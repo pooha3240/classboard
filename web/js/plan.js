@@ -1,6 +1,7 @@
 // 주간 진도·차시 자료: 나이스 파일 올리기, 주간 진도 조정(교체·없음·한 번 더·건너뛰기), 차시마다 자료 미리 올리기
 import { api, getToken, needLogin, $, esc } from './auth.js';
-import { MediaTools, probeVideo, YT_EMBED } from './media.js';
+import { MediaTools, YT_EMBED, uploadFile } from './media.js';
+import { parsePlanXlsx, parseTtPdf } from './neis.js';
 
 const qs = new URLSearchParams(location.search);
 let grade = +qs.get('grade') || null, cls = +qs.get('class') || null;
@@ -200,29 +201,9 @@ dlg.addEventListener('drop', (e) => {
 });
 
 async function uploadFor(file) {
-  const video = /^video\//.test(file.type) || /\.(mp4|m4v|mov|webm)$/i.test(file.name);
-  if (/\.(pptx?|hwpx?|docx?|xlsx?)$/i.test(file.name)) { toast('PPT·한글·워드 파일은 PC에서 PDF로 저장해서 올려 주세요', 5000); return; }
-  if (file.size > (video ? 95 : 60) * MB) { toast(video ? '동영상은 95MB까지입니다. 긴 영상은 유튜브 주소로 붙이세요' : '파일이 너무 큽니다(최대 60MB)', 5000); return; }
-  let probe = null;
-  if (video) {
-    probe = await probeVideo(file);
-    if (!probe) { toast('이 기기에서 재생할 수 없는 동영상입니다. MP4(H.264)로 저장해서 올려 주세요', 6000); return; }
-  }
   const prog = $('#pd-progress');
   try {
-    const token = await getToken();
-    const res = await new Promise((resolve, reject) => {
-      const x = new XMLHttpRequest();
-      x.open('POST', `/eboard-api/media?kind=file&name=${encodeURIComponent(file.name)}${probe ? `&w=${probe.w}&h=${probe.h}` : ''}`);
-      x.setRequestHeader('Authorization', 'Bearer ' + token);
-      x.upload.onprogress = (ev) => { if (ev.lengthComputable) { const p = Math.round(ev.loaded / ev.total * 100); prog.textContent = p < 100 ? `올리는 중… ${p}%` : (video ? '저장하는 중…' : '바꾸는 중…'); } };
-      x.onload = () => { let j = {}; try { j = JSON.parse(x.responseText); } catch { /* 무시 */ } x.status < 300 ? resolve(j) : reject(new Error((j.detail && j.detail.message) || `올리지 못했습니다(${x.status})`)); };
-      x.onerror = () => reject(new Error('네트워크 오류'));
-      x.send(file);
-    });
-    if (video && probe.thumb && !res.reused) {
-      await fetch(`/eboard-api/media/${res.items[0].asset}/thumb`, { method: 'POST', headers: { Authorization: 'Bearer ' + token }, body: probe.thumb }).catch(() => {});
-    }
+    const res = await uploadFile(file, { token: await getToken(), onProgress: (p, t) => { prog.textContent = t; } });
     await attachResult(res);
     prog.textContent = '';
     toast(`${file.name} 을(를) 이 차시에 붙였습니다`);
@@ -230,8 +211,7 @@ async function uploadFor(file) {
 }
 
 async function attachResult(res) {
-  if (res.kind === 'video') await attach({ kind: 'video', asset: res.items[0].asset, title: res.name || '' });
-  else await attach({ kind: 'pages', assets: res.items.map((it) => it.asset).slice(0, 80), title: res.name || '' });
+  await attach({ kind: 'pages', assets: res.items.map((it) => it.asset).slice(0, 60), title: res.name || '' });
 }
 
 $('#pd-url-add').onclick = async () => {
@@ -294,7 +274,19 @@ async function uploadNeis(files, force = false) {
     const line = out.lastElementChild;
     try {
       const token = await getToken();
-      const r = await fetch(`/eboard-api/plan/upload?${q()}&name=${encodeURIComponent(f.name)}${force ? '&force=1' : ''}`, { method: 'POST', headers: { Authorization: 'Bearer ' + token }, body: f });
+      const buf = await f.arrayBuffer();
+      const head = new Uint8Array(buf.slice(0, 4));
+      let kind, parsed;
+      if (head[0] === 0x25 && head[1] === 0x50 && head[2] === 0x44 && head[3] === 0x46) {          // %PDF: 학기별 시간표
+        const lib = await import('/vendor/pdfjs/pdf.min.mjs');
+        lib.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/pdf.worker.min.mjs';
+        kind = 'timetable'; parsed = await parseTtPdf(buf, lib);
+      } else if (head[0] === 0x50 && head[1] === 0x4b) {                                           // PK: 엑셀(.xlsx)
+        kind = 'plan'; parsed = await parsePlanXlsx(buf);
+      } else throw new Error('나이스에서 내려받은 연간지도계획(.xlsx) 또는 학기별 시간표(PDF)를 올려 주세요');
+      line.textContent = `${f.name} 맞추는 중…`;
+      const r = await fetch(`/eboard-api/plan/upload?kind=${kind}&name=${encodeURIComponent(f.name)}${force ? '&force=1' : ''}`, {
+        method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(parsed) });
       const j = await r.json().catch(() => ({}));
       if (r.status === 409 && j.detail && j.detail.error === 'class_mismatch') {
         line.innerHTML = `<b>${esc(f.name)}</b>: ${esc(j.detail.message)}. 지금 고른 반은 ${grade}학년 ${cls}반입니다. <button type="button" class="chip" data-force>그래도 이 반에 올리기</button>`;
@@ -322,13 +314,9 @@ async function loadTerms() {
 // ── 시작 ──
 (async () => {
   try {
-    const c = await api('/classes');
-    const sel = $('#pl-class');
-    sel.innerHTML = c.classes.map((x) => `<option value="${x.grade}-${x.class}">${x.grade}학년 ${x.class}반</option>`).join('');
-    if (!grade && c.classes.length) { grade = c.classes[0].grade; cls = c.classes[0].class; }
-    if (grade && !c.classes.some((x) => x.grade === grade && x.class === cls)) sel.insertAdjacentHTML('afterbegin', `<option value="${grade}-${cls}">${grade}학년 ${cls}반</option>`);
-    sel.value = `${grade}-${cls}`;
-    sel.onchange = () => { [grade, cls] = sel.value.split('-').map(Number); load(monday); };
+    const me = await api('/me');
+    grade = me.klass.grade; cls = me.klass.class;
+    $('#pl-class').textContent = `${grade}학년 ${cls}반`;
   } catch (e) { if (needLogin(e)) return; }
   await load(qs.get('date') || '');
 })();
