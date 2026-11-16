@@ -284,3 +284,10 @@ loadNeis();
     await loadTimetable();
   } catch (e) { if (!needLogin(e)) toast(e.message); }
 })();
+
+// 전자칠판 도우미(크롬 확장)가 깔렸는지
+setTimeout(() => {
+  const v = document.documentElement.getAttribute('data-ebx-helper');
+  const el = document.getElementById('helper-st');
+  if (el) el.textContent = v ? `· 깔림 (${v})` : '· 이 브라우저에는 아직 없음';
+}, 300);

@@ -2,6 +2,8 @@
 // 올린 파일은 서버가 webp 로 바꿔 보관합니다. 페이지 배경은 page:bg / page:import 로 모든 교사 기기에 함께 바뀝니다.
 import { isImageBg, BOARD_WHITE, BOARD_GREEN, pageColor } from './shapes.js';
 import { sha256Hex, convertImage, openPdf } from './convert.js';
+import { RemoteTab, helperVersion, onHelperCast, castEnded } from './remote.js';
+import { askConfirm } from './ui.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -114,6 +116,10 @@ export class MediaTools {
     this._buildPicker();
     this._buildCam();
     this._bindDrop();
+    this.remote = new RemoteTab({ renderer, toast });
+    this.remote.onChange = () => this._remoteBar();
+    renderer.onInteract = () => this._remoteBar();
+    onHelperCast((c) => this.castFromHelper(c));
   }
 
   // ── 패널 ──
@@ -527,16 +533,23 @@ export class MediaTools {
     // 실시간 배경 조작 막대
     const lb = document.createElement('div');
     lb.className = 'live-bar'; lb.hidden = true;
-    lb.innerHTML = `<span class="live-dot"></span><b class="live-name">웹캠 배경</b>
+    lb.innerHTML = `<span class="lb-grip" title="끌어서 옮기기 (두 번 누르면 제자리)" aria-label="막대 옮기기">⠿</span><span class="live-dot"></span><b class="live-name">웹캠 배경</b>
       <button type="button" data-l="mirror">좌우 반전</button>
+      <button type="button" data-l="ctl" class="ctl" hidden></button>
+      <button type="button" data-l="back" hidden title="띄운 탭에서 앞 화면으로">◀ 뒤로</button>
+      <button type="button" data-l="kb" hidden title="띄운 탭의 입력칸에 글자 넣기">⌨ 글자</button>
       <button type="button" data-l="next" title="지금 화면과 판서를 이 페이지에 남기고 새 페이지에서 계속">다음 장</button>
       <button type="button" data-l="off" class="off">끄기</button>`;
     document.body.appendChild(lb);
     this.liveBar = lb;
+    dragBar(lb, $('.lb-grip', lb), 'liveBar.pos');     // 띄운 화면의 단추를 가리면 왼쪽 손잡이로 끌어서 옮김(기기마다 기억)
     lb.onclick = (e) => {
       const a = e.target.closest('[data-l]')?.dataset.l;
       if (a === 'off') this.liveOff(true);
       else if (a === 'next') this.liveNext();
+      else if (a === 'ctl') this._ctlClick();
+      else if (a === 'back') this.remote.send({ k: 'back' });
+      else if (a === 'kb') this.remote.openKeyboard();
       else if (a === 'mirror') {
         this.cam.mirror = !this.cam.mirror; ls.set('cam.mirror', this.cam.mirror); this._camSync();
         if (this.liveVideo) this.r.setLive(this.liveVideo, this.cam.mirror);
@@ -554,6 +567,10 @@ export class MediaTools {
 
   // ── 실시간 화면 배경: 크롬의 다른 탭(아이스크림 등 칠판 안에 못 띄우는 사이트)을 움직이는 그대로 깔고 판서 ──
   async liveScreen() {
+    if (helperVersion()) {
+      const go = await askConfirm('위쪽에 \'공유 중\' 막대 없이 띄우려면, 띄울 탭(아이스크림)으로 가서 주소창 오른쪽의 도우미 아이콘을 누르거나 Alt+Shift+E 를 누르세요(오른쪽 클릭 → \'이 탭을 전자칠판에 띄우기\'도 됨). 여기서 고르면 크롬 선택창으로 띄우고 \'공유 중\' 막대가 생깁니다.', '크롬 선택창으로 고르기', { cancel: '닫기' });
+      if (!go) { this.panel.hidden = true; return; }
+    }
     let stream;
     // 크롬은 공유를 시작하면 그 탭으로 넘어가는데, 칠판 탭에 그대로 남도록
     const ctl = typeof CaptureController === 'function' ? new CaptureController() : null;
@@ -572,7 +589,60 @@ export class MediaTools {
     track.addEventListener('ended', () => { if (this.liveKind === 'screen') this.liveOff(true); });   // 크롬의 '공유 중지'
     this.panel.hidden = true;
     await this._liveStart(stream, 'screen');
-    this.toast('다른 탭 화면을 띄웠습니다. 그 사이트를 누를 때는 그 탭으로 가서 조작하고, 칠판 탭으로 돌아오면 바뀐 화면 위에 이어서 판서합니다', 6000);
+    if (this.liveKind !== 'screen') return;
+    // 도우미(크롬 확장)가 있으면 칠판에서 그 탭을 직접 누름
+    if (this.remote.attach(track, this.liveVideo)) {
+      this.toast('다른 탭 화면을 띄웠습니다. 실시간 막대의 \'🖱 조작\'을 누르면 칠판에서 그 탭을 손가락으로 누르고, \'✎ 판서\'로 돌아오면 그 위에 씁니다', 6500);
+    } else if (helperVersion()) {
+      this.remote._waitedForReload = true;
+      this.toast('다른 탭 화면을 띄웠습니다. 칠판에서 그 탭을 누르려면 그 탭을 한 번 새로고침(F5)하세요(도우미를 깔기 전에 연 탭)', 6500);
+    } else {
+      this.toast('다른 탭 화면을 띄웠습니다. 그 탭으로 가서 조작하면 바뀐 화면 위에 판서합니다. 칠판에서 바로 누르려면 설정의 \'전자칠판 도우미\'를 까세요', 6500);
+    }
+  }
+
+  // 도우미가 보낸 탭(그 탭에서 도우미 아이콘·Alt+Shift+E): 크롬 공유 막대 없이 실시간 배경으로
+  async castFromHelper(c) {
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: c.streamId, maxWidth: 1920, maxHeight: 1080, maxFrameRate: 30 } },
+      });
+    } catch (e) { this.toast(`그 탭을 띄우지 못했습니다 (${e.name}). 그 탭에서 도우미 아이콘을 다시 누르세요`, 5000); return; }
+    const track = stream.getVideoTracks()[0];
+    track.addEventListener('ended', () => { if (this.liveKind === 'screen' && this.liveStream === stream) this.liveOff(true); });   // 그 탭을 닫음
+    this.panel.hidden = true;
+    await this._liveStart(stream, 'screen');
+    if (this.liveKind !== 'screen' || this.liveStream !== stream) { stream.getTracks().forEach((t) => t.stop()); castEnded(c.secret); return; }
+    this.castSecret = c.secret;
+    this.remote.attachSecret(c.secret, track, this.liveVideo);
+    const name = (c.title || '').slice(0, 30);
+    this.toast(`${name ? `'${name}' ` : ''}탭을 띄웠습니다. 막대의 '🖱 조작'을 누르면 칠판에서 그 탭을 누르고, '✎ 판서'로 돌아오면 그 위에 씁니다`, 6000);
+  }
+
+  // 실시간 막대의 조작/판서 전환 + 도우미 연결 상태
+  _remoteBar() {
+    const screen = this.liveKind === 'screen', on = this.remote.active && screen;
+    const b = this.liveBar.querySelector('[data-l="ctl"]');
+    b.hidden = !screen;
+    const inter = on && this.r.webInteract;
+    b.textContent = on ? (inter ? '✎ 판서' : '🖱 조작') : '🖱 조작 ⚠';
+    b.title = on ? (inter ? '판서하기로 돌아가기' : '칠판에서 그 탭을 손가락으로 누르기') : '도우미가 그 탭에 연결되지 않았습니다';
+    b.classList.toggle('on', inter);
+    b.classList.toggle('warn', screen && !on);
+    this.liveBar.querySelector('[data-l="back"]').hidden = !on;
+    this.liveBar.querySelector('[data-l="kb"]').hidden = !on;
+  }
+
+  _ctlClick() {
+    if (this.remote.active) { this.r.setWebInteract(!this.r.webInteract); return; }
+    if (helperVersion()) {
+      this.remote._waitedForReload = true;
+      this.toast('도우미가 그 탭에 연결되지 않았습니다. 띄운 탭(아이스크림)을 한 번 새로고침(F5)하세요. 그래도 안 되면 chrome://extensions 에서 도우미를 다시 읽고(↻) 칠판도 새로고침하세요', 7000);
+    } else {
+      this.toast('이 칠판 탭에서 도우미가 보이지 않습니다. 도우미를 깔았다면 칠판을 새로고침(F5)하고, 아직이면 ⋯ 메뉴 → 교시·시간표 설정 → 전자칠판 도우미에서 까세요', 7000);
+    }
   }
 
   async _liveStart(stream, kind) {
@@ -589,6 +659,8 @@ export class MediaTools {
     $('.live-name', this.liveBar).textContent = kind === 'screen' ? '화면 배경' : '웹캠 배경';
     this.liveBar.querySelector('[data-l="mirror"]').hidden = kind !== 'cam';
     this.liveBar.hidden = false;
+    this.liveBar.placeSaved && this.liveBar.placeSaved();
+    this._remoteBar();
     this._emitLive(true, pid);
   }
 
@@ -619,7 +691,7 @@ export class MediaTools {
     const blob = freeze ? await this._frame(v) : null;
     this.r.setLive(null);
     v.srcObject = null; v.remove();
-    if (this.liveKind === 'screen') { if (this.liveStream) this.liveStream.getTracks().forEach((t) => t.stop()); this.liveStream = null; }
+    if (this.liveKind === 'screen') { this.remote.detach(); castEnded(this.castSecret); this.castSecret = null; if (this.liveStream) this.liveStream.getTracks().forEach((t) => t.stop()); this.liveStream = null; }
     else this.closeCam();
     this._emitLive(false, pid);
     await this._freeze(blob, pid);
@@ -727,4 +799,38 @@ export class MediaTools {
     else await this.importPages([res.items[0].asset]);
     if (this.cam.size === 'large') { this.cam.size = 'small'; this._camSync(); }   // 찍은 뒤 판서할 수 있게 작게
   }
+}
+
+// 떠 있는 막대를 손잡이로 끌어 옮기기. 자리는 화면 비율로 기억(기기마다), 손잡이를 두 번 누르면 제자리(오른쪽 아래)
+function dragBar(bar, grip, key) {
+  const clamp = (x, y) => {
+    const w = bar.offsetWidth, h = bar.offsetHeight;
+    return [Math.min(Math.max(4, x), innerWidth - w - 4), Math.min(Math.max(4, y), innerHeight - h - 4)];
+  };
+  const put = (x, y) => { [x, y] = clamp(x, y); Object.assign(bar.style, { left: `${x}px`, top: `${y}px`, right: 'auto', bottom: 'auto' }); return [x, y]; };
+  const reset = () => { Object.assign(bar.style, { left: '', top: '', right: '', bottom: '' }); };
+  bar.placeSaved = () => {
+    const p = ls.get(key, null);
+    if (p && typeof p.fx === 'number') requestAnimationFrame(() => put(p.fx * innerWidth, p.fy * innerHeight));
+    else reset();
+  };
+  let start = null;
+  grip.addEventListener('pointerdown', (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const r = bar.getBoundingClientRect();
+    start = { dx: e.clientX - r.left, dy: e.clientY - r.top, id: e.pointerId };
+    try { grip.setPointerCapture(e.pointerId); } catch { /* 이미 뗌 */ }
+    bar.classList.add('dragging');
+  });
+  grip.addEventListener('pointermove', (e) => { if (start && e.pointerId === start.id) put(e.clientX - start.dx, e.clientY - start.dy); });
+  const end = (e) => {
+    if (!start || e.pointerId !== start.id) return;
+    start = null; bar.classList.remove('dragging');
+    const r = bar.getBoundingClientRect();
+    ls.set(key, { fx: r.left / innerWidth, fy: r.top / innerHeight });
+  };
+  grip.addEventListener('pointerup', end);
+  grip.addEventListener('pointercancel', end);
+  grip.addEventListener('dblclick', () => { ls.set(key, null); reset(); });
+  addEventListener('resize', () => { if (!bar.hidden && bar.style.left) { const r = bar.getBoundingClientRect(); put(r.left, r.top); } });
 }

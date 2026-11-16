@@ -72,8 +72,18 @@ export class Renderer {
     this.requestMain();
   }
 
+  // 실시간으로 띄운 다른 탭을 칠판에서 누를 때 손가락을 받는 판(remote.js). '조작하기'를 켰을 때만 누름을 받음
+  setRemote(pad) {
+    if (this.remotePad && this.remotePad !== pad) this.remotePad.remove();
+    this.remotePad = pad || null;
+    if (pad && pad.parentNode !== this.stage) this.stage.insertBefore(pad, this.main);
+    if (!pad && !this.web) this.setWebInteract(false);
+    else this.setWebInteract(this.webInteract);
+    this.requestMain();
+  }
+
   _syncLive() {
-    for (const el of [this.camVideo, this.under]) {
+    for (const el of [this.camVideo, this.under, this.remotePad]) {
       if (!el) continue;
       const v = this.view, st = el.style;
       st.left = `${v.ox}px`; st.top = `${v.oy}px`;
@@ -91,18 +101,21 @@ export class Renderer {
 
   // ── 웹페이지 배경: 캔버스 아래에 iframe ──
   setWebInteract(on) {
-    this.webInteract = !!on && !!this.web;
+    this.webInteract = !!on && (!!this.web || !!this.remotePad);
     this.stage.classList.toggle('web-interact', this.webInteract);
-    this.webToggle.innerHTML = this.webInteract ? '✎ 판서<span class="wt-long">하기</span>' : '🖱 <span class="wt-long">웹페이지 </span>조작<span class="wt-long">하기</span>';
-    this.webToggle.title = this.webInteract ? '판서하기' : '웹페이지 조작하기';
+    const what = this.remotePad && !this.web ? '띄운 탭' : '웹페이지';
+    this.webToggle.innerHTML = this.webInteract ? '✎ 판서<span class="wt-long">하기</span>' : `🖱 <span class="wt-long">${what} </span>조작<span class="wt-long">하기</span>`;
+    this.webToggle.title = this.webInteract ? '판서하기' : `${what} 조작하기`;
+    if (!this.web) this.webToggle.hidden = true;          // 띄운 탭 조작은 실시간 막대의 '🖱 조작'으로
     this.webToggle.classList.toggle('on', this.webInteract);
+    if (this.onInteract) this.onInteract(this.webInteract);
   }
 
   _syncWeb() {
     const p = this.board && this.board.page;
     const url = p && p.bg_type === 'web' && p.bg_meta && p.bg_meta.url;
     if (!url) {
-      if (this.web) { this.web.remove(); this.web = null; this.setWebInteract(false); }
+      if (this.web) { this.web.remove(); this.web = null; this.setWebInteract(this.webInteract); }
       this.webToggle.hidden = true;
       return;
     }

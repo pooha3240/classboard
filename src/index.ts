@@ -7,6 +7,7 @@
  *   /api/health       → 버전·이 요청을 받은 데이터센터
  *   그 밖             → web/ 정적 파일 (assets 가 먼저 처리하고, 없는 경로만 여기로 옴)
  */
+import { helperZip } from "./helper";
 import { SERVER_VERSION } from "./room";
 export { ClassRoom } from "./room";
 export { ProbeRoom } from "./probe";
@@ -53,6 +54,8 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     const p = url.pathname;
+
+    if (p === "/helper.zip" && req.method === "GET") return helperZip(req, env.ASSETS);
 
     if (p === "/ws") {
       if (req.headers.get("Upgrade") !== "websocket") return json({ error: "websocket_only" }, 426);

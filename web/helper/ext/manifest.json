@@ -1,0 +1,73 @@
+{
+  "manifest_version": 3,
+  "name": "classboard 전자칠판 도우미",
+  "short_name": "칠판 도우미",
+  "version": "1.1.0",
+  "description": "전자칠판에 실시간으로 띄운 다른 탭(아이스크림 등)을 칠판 화면에서 손가락으로 눌러 조작합니다.",
+  "minimum_chrome_version": "111",
+  "background": {
+    "service_worker": "bg.js"
+  },
+  "action": {
+    "default_title": "이 탭을 전자칠판에 띄우기 (Alt+Shift+E)",
+    "default_icon": {
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Alt+Shift+E"
+      },
+      "description": "이 탭을 전자칠판에 띄우기"
+    }
+  },
+  "permissions": [
+    "storage",
+    "scripting",
+    "tabCapture",
+    "contextMenus"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "page.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_origin_as_fallback": true
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "main.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_origin_as_fallback": true,
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "__BOARD_MATCH__"
+      ],
+      "js": [
+        "bridge.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "icons": {
+    "128": "icon128.png",
+    "48": "icon48.png"
+  }
+}

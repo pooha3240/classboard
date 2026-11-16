@@ -63,7 +63,7 @@ dialog.sheet::backdrop { background: rgba(20,20,18,.45); }
 
 /* 주간 진도 */
 .plan { max-width: 1400px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
-.pl-steps { margin: 6px 0; padding-left: 20px; }
+.pl-steps, .helper-steps { margin: 6px 0; padding-left: 20px; }
 .pl-drop { display: flex; align-items: center; gap: 14px; padding: 18px; margin: 10px 0; border: 2px dashed var(--line); border-radius: 14px; }
 .pl-drop.over { border-color: var(--accent); background: #eef4ff; }
 .pl-result p { margin: 4px 0; font-size: 14px; }
@@ -127,3 +127,5 @@ body.plan-body .pl-swap:not([hidden]) ~ .pl-grid .slot { cursor: crosshair; }
 .neis-form input[type=password], .neis-form input[type=text] { flex: 1; min-width: 200px; }
 .neis-schools { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .warn { color: #b3261e; }
+
+.helper-steps li { margin: 3px 0; }

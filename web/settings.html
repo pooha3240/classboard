@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>교시·시간표 설정</title>
-<link rel="stylesheet" href="css/board.css?v=0.11.0">
-<link rel="stylesheet" href="css/pages.css?v=0.11.0">
+<link rel="stylesheet" href="css/board.css?v=0.12.0">
+<link rel="stylesheet" href="css/pages.css?v=0.12.0">
 </head>
 <body class="page-body" data-login="login.html">
   <header class="page-top">
@@ -58,6 +58,19 @@
       <div style="overflow-x:auto"><table class="tt"><thead><tr><th>교시</th><th>월</th><th>화</th><th>수</th><th>목</th><th>금</th></tr></thead><tbody id="tt"></tbody></table></div>
       <div class="row-end"><span></span><button id="tt-save" type="button" class="chip primary">시간표 저장</button></div>
     </section>
+    <section class="panel" id="helper">
+      <h2>전자칠판 도우미 <span id="helper-st" class="muted small"></span></h2>
+      <p class="muted small">칠판에 '다른 탭 실시간으로 띄우기'로 띄운 사이트(아이스크림 등)를 칠판 화면에서 손가락으로 눌러 조작하게 해 주는 크롬 확장입니다. 그 탭은 메인 모니터에 두거나 뒤에 숨겨 두어도 되고, 전자칠판 앞에서 누르기·끌기·두 손가락 스크롤·글자 넣기를 할 수 있습니다. 칠판을 띄우는 컴퓨터(교사 PC)의 크롬·엣지·웨일에 한 번 깔면 됩니다.</p>
+      <ol class="muted small helper-steps">
+        <li>아래 '도우미 받기'로 파일을 받아 압축을 풉니다(지우지 않을 곳에. 예: 문서 폴더).</li>
+        <li>주소창에 <b>chrome://extensions</b> 를 넣고 오른쪽 위 <b>개발자 모드</b>를 켭니다(엣지는 edge://extensions, 웨일은 whale://extensions).</li>
+        <li><b>압축해제된 확장 프로그램을 로드합니다</b>를 눌러 푼 폴더(manifest.json 이 있는 폴더)를 고릅니다.</li>
+        <li>주소창 오른쪽 퍼즐 조각을 눌러 도우미 옆 핀을 누르면 아이콘이 늘 보입니다. 칠판을 새로고침하면 위에 '깔림'이 보입니다.</li>
+      </ol>
+      <p class="muted small"><b>띄우기</b>: 띄울 탭(아이스크림)에서 도우미 아이콘을 누르거나 <b>Alt+Shift+E</b>(또는 오른쪽 클릭 → '이 탭을 전자칠판에 띄우기'). 칠판 위쪽에 '공유 중' 막대가 생기지 않습니다. 칠판 오른쪽 아래 실시간 막대의 '🖱 조작'으로 조작과 판서를 바꿉니다. 막대가 띄운 화면의 단추를 가리면 왼쪽 손잡이(⠿)를 끌어 옮깁니다.</p>
+      <p class="muted small">도우미는 <b>이 칠판 주소</b>에서 받은 것이라 이 칠판에서만 동작합니다(칠판 주소를 바꾸면 다시 받으세요). 칠판이 띄운 탭에만 조작을 보내고 어디로도 정보를 보내지 않습니다. 흉내 낸 누르기라서 소리 나는 영상은 처음 한 번 그 탭에서 직접 눌러 두어야 재생될 수 있고, 새 창으로 열리는 자료는 같은 탭에서 열립니다(막대의 '◀ 뒤로'로 돌아옴). 새 버전은 같은 폴더에 덮어 풀고 확장 목록에서 ↻(다시 읽기)를 누릅니다.</p>
+      <div class="row-end"><span></span><a class="chip primary" href="/helper.zip" download>도우미 받기 (zip)</a></div>
+    </section>
     <section class="panel" id="store-panel">
       <h2>저장 공간과 백업</h2>
       <div id="store-usage" class="small"></div>
@@ -83,6 +96,6 @@
     </section>
   </main>
   <div id="toast" role="status" aria-live="polite"></div>
-  <script type="module" src="js/settings.js?v=0.11.0"></script>
+  <script type="module" src="js/settings.js?v=0.12.0"></script>
 </body>
 </html>
