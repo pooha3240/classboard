@@ -27,6 +27,82 @@ function Fail($msg) { throw $msg }
 $WR = Join-Path $Root 'node_modules\.bin\wrangler.cmd'
 function Wrangler { & $WR @args }
 
+# ── 계정·주소 이름(한국어로 묻고 Cloudflare API 로 처리) ──
+function Cf($method, $path, $body) {
+  $h = @{ Authorization = "Bearer $script:CfToken" }
+  $p = @{ Method = $method; Uri = "https://api.cloudflare.com/client/v4$path"; Headers = $h; UseBasicParsing = $true; ErrorAction = 'Stop' }
+  if ($body) { $p.Body = [Text.Encoding]::UTF8.GetBytes(($body | ConvertTo-Json -Compress)); $p.ContentType = 'application/json' }
+  try { return Invoke-RestMethod @p }
+  catch {
+    $err = $_; $msg = $null
+    if ($err.ErrorDetails -and $err.ErrorDetails.Message) {
+      try { $j = $err.ErrorDetails.Message | ConvertFrom-Json; $msg = (@($j.errors) | ForEach-Object { "$($_.code) $($_.message)" }) -join '; ' } catch { }
+    }
+    if (-not $msg) { $msg = $err.Exception.Message }
+    throw "CF:$msg"
+  }
+}
+function Prepare-Account {
+  $script:CfToken = $null
+  try { $t = (& $WR auth token --json 2>$null | Out-String | ConvertFrom-Json); if ($t.type -eq 'oauth' -or $t.type -eq 'api_token') { $script:CfToken = $t.token } } catch { }
+  if (-not $script:CfToken) {
+    Warn "계정 정보를 미리 읽지 못했습니다. 아래에서 영어로 물으면:"
+    Warn "  register a workers.dev subdomain? → Enter,  subdomain to be? → 영어 소문자 주소 이름(예: ulsan-jungmu) + Enter"
+    return
+  }
+  try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch { }
+  # 계정 고르기
+  try { $accts = @((Cf GET '/accounts?per_page=50').result) } catch { Warn "계정 목록을 읽지 못했습니다($_). 영어로 물으면 올릴 계정을 고르세요."; return }
+  if ($accts.Count -eq 0) { Warn "Cloudflare 계정을 찾지 못했습니다."; return }
+  $acct = $accts[0]
+  if ($accts.Count -gt 1) {
+    Write-Host ""
+    Write-Host "  Cloudflare 계정이 여러 개입니다. 어느 계정에 올릴까요?" -ForegroundColor Cyan
+    for ($i = 0; $i -lt $accts.Count; $i++) { Write-Host ("    {0}) {1}" -f ($i + 1), $accts[$i].name) }
+    while ($true) {
+      $n = Read-Host "  번호를 넣고 Enter"
+      if ($n -match '^\d+$' -and [int]$n -ge 1 -and [int]$n -le $accts.Count) { $acct = $accts[[int]$n - 1]; break }
+      Warn "목록에 있는 번호를 넣으세요."
+    }
+  }
+  $env:CLOUDFLARE_ACCOUNT_ID = $acct.id
+  Info "계정: $($acct.name)"
+  # workers.dev 주소 이름
+  $sub = $null
+  try { $sub = (Cf GET "/accounts/$($acct.id)/workers/subdomain").result.subdomain } catch { $sub = $null }
+  if ($sub) { Info "칠판 주소: https://classboard.$sub.workers.dev"; return }
+  Write-Host ""
+  Write-Host "  칠판 주소에 쓸 이름을 정합니다. 주소는 https://classboard.<이름>.workers.dev 가 됩니다." -ForegroundColor Cyan
+  Info "영어 소문자·숫자·- 만 쓸 수 있고, 계정마다 한 번 정하면 바꾸기 번거로우니 오래 쓸 이름으로 정하세요."
+  Info "예: ulsan-jungmu, jmschool5  (한글이 들어가면 한/영 키를 눌러 영어로 바꾸세요)"
+  while ($true) {
+    $name = ([string](Read-Host "  주소 이름")).Trim().ToLower()
+    if (-not $name) { Warn "이름을 넣으세요."; continue }
+    if ($name -match '[^\x00-\x7F]') { Warn "한글이 들어갔습니다. 한/영 키를 눌러 영어로 바꾼 뒤 다시 넣으세요."; continue }
+    if ($name -notmatch '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$') { Warn "영어 소문자·숫자·- 만 쓰고, -로 시작하거나 끝나면 안 됩니다."; continue }
+    # 쓸 수 있는지 먼저 확인(wrangler 와 같은 방식: 10032 = 비어 있음, 10031 = 이미 씀)
+    $free = $true
+    try { Cf GET "/accounts/$($acct.id)/workers/subdomains/$name" | Out-Null; $free = $false } catch { if ("$_" -match '10031') { $free = $false } }
+    if (-not $free) { Warn "이미 누가 쓰는 이름입니다. 다른 이름을 넣으세요(뒤에 숫자를 붙여 보세요)."; continue }
+    if ((Read-Host "  https://classboard.$name.workers.dev 로 할까요? (Y/n)") -match '^[nN]') { continue }
+    try {
+      $r = Cf PUT "/accounts/$($acct.id)/workers/subdomain" @{ subdomain = $name }
+      $sub = $r.result.subdomain; if (-not $sub) { $sub = $name }
+      Info "주소 이름을 정했습니다: https://classboard.$sub.workers.dev"
+      Info "(새 주소는 몇 분 뒤부터 열릴 수 있습니다)"
+      return
+    } catch {
+      $e = "$_"
+      if ($e -match 'unavailable|taken|already|exists|10031') { Warn "이미 누가 쓰는 이름입니다. 다른 이름을 넣으세요(뒤에 숫자를 붙여 보세요)." }
+      elseif ($e -match 'invalid|10013') { Warn "쓸 수 없는 이름입니다. 다른 이름을 넣으세요." }
+      else {
+        Warn "주소 이름을 정하지 못했습니다: $($e -replace '^CF:','')"
+        if ((Read-Host "  다른 이름으로 다시 할까요? (Y/n, n 이면 아래에서 영어로 다시 묻습니다)") -match '^[nN]') { return }
+      }
+    }
+  }
+}
+
 Write-Host "==============================================" -ForegroundColor Green
 Write-Host "  classboard 전자칠판 설치 도우미" -ForegroundColor Green
 Write-Host "==============================================" -ForegroundColor Green
@@ -102,12 +178,8 @@ try {
 
   # ── 3. 배포 ──
   Step 3 "내 Cloudflare 계정에 올리기"
-  Info "처음이면 workers.dev 주소 이름을 영어로 물어봅니다."
-  Info "  - Would you like to register ... ? 에는 그냥 Enter(yes)"
-  Info "  - What would you like your workers.dev subdomain to be? 에는 주소 이름을 넣고 Enter"
-  Info "    영어 소문자·숫자·- 만 됩니다(예: ulsan-jungmu). 먼저 한/영 키로 영어 상태인지 확인하세요."
-  Info "    'is invalid' 가 나오면 글자가 안 들어갔거나 이미 누가 쓰는 이름입니다. 다른 이름으로 다시 넣으세요."
-  Info "계정이 여러 개면 어느 계정에 올릴지 고르라고 나옵니다."
+  # 계정 고르기·workers.dev 주소 이름 정하기를 한국어로 먼저 물어 처리(wrangler 가 영어로 묻지 않게)
+  Prepare-Account
   $out = Join-Path $Work 'deploy-output.ndjson'
   if (Test-Path $out) { Remove-Item -Force $out }
   $env:WRANGLER_OUTPUT_FILE_PATH = $out
