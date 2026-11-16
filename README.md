@@ -40,7 +40,7 @@
 
 **[설치 안내 보기 → docs/INSTALL.md](docs/INSTALL.md)**
 
-- **GitHub 계정 없이 (Windows)**: [zip 파일](https://github.com/pooha3240/classboard/archive/refs/heads/main.zip)을 받아 압축을 풀고 `install-windows.bat` 을 실행합니다. Cloudflare 로그인·배포·설치 키 만들기까지 도우미가 합니다.
+- **GitHub 계정 없이 (Windows)**: [zip 파일](https://github.com/pooha3240/classboard/archive/refs/heads/main.zip)을 받아 압축을 풀고 `install-windows.bat` 을 실행합니다. 설치 창에 판·주소 이름·학급·교사 정보를 넣으면 Cloudflare 로그인·배포·설치 키·처음 설정까지 도우미가 합니다(브라우저에서 허용 한 번).
 - **GitHub 계정으로**: 이 저장소를 Fork 한 뒤 Cloudflare 의 Workers & Pages → Import a repository 로 연결하고, Secret `SETUP_KEY` 를 넣습니다. 업데이트는 Sync fork 한 번입니다.
 
 설치 뒤 주소를 열어 처음 설정(학급·교사 계정) → 교시 시각 → 전자칠판 등록 순서로 하면 됩니다.
