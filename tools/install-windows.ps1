@@ -102,7 +102,11 @@ try {
 
   # ── 3. 배포 ──
   Step 3 "내 Cloudflare 계정에 올리기"
-  Info "처음이면 workers.dev 주소 이름을 물어봅니다. 영어 소문자로 짧게(예: 학교명+이름) 정하세요."
+  Info "처음이면 workers.dev 주소 이름을 영어로 물어봅니다."
+  Info "  - Would you like to register ... ? 에는 그냥 Enter(yes)"
+  Info "  - What would you like your workers.dev subdomain to be? 에는 주소 이름을 넣고 Enter"
+  Info "    영어 소문자·숫자·- 만 됩니다(예: ulsan-jungmu). 먼저 한/영 키로 영어 상태인지 확인하세요."
+  Info "    'is invalid' 가 나오면 글자가 안 들어갔거나 이미 누가 쓰는 이름입니다. 다른 이름으로 다시 넣으세요."
   Info "계정이 여러 개면 어느 계정에 올릴지 고르라고 나옵니다."
   $out = Join-Path $Work 'deploy-output.ndjson'
   if (Test-Path $out) { Remove-Item -Force $out }
