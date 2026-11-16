@@ -6,10 +6,10 @@
 <meta name="theme-color" content="#f4f4f1">
 <title>전자칠판</title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="css/board.css?v=0.12.0">
+<link rel="stylesheet" href="css/board.css?v=0.12.1">
 </head>
 <!-- data-v 는 서버 버전(src/room.ts SERVER_VERSION)과 같게 올립니다. 다르면 전자칠판이 스스로 새로 고칩니다. -->
-<body data-v="0.12.0">
+<body data-v="0.12.1">
 <script>/* 막대 위치를 먼저 정해 깜박임 방지(기본: 아래) */ try { if (localStorage.getItem('eboard.barBottom') !== 'false') document.body.classList.add('bar-bottom'); } catch (e) { document.body.classList.add('bar-bottom'); }</script>
   <header id="topbar">
     <button id="btn-class" class="chip" type="button"><span id="class-label">학급 선택</span></button>
@@ -106,6 +106,6 @@
     <div class="row-end"><button id="devlist-close" type="button" class="chip">닫기</button></div>
   </dialog>
 
-  <script type="module" src="js/app.js?v=0.12.0"></script>
+  <script type="module" src="js/app.js?v=0.12.1"></script>
 </body>
 </html>

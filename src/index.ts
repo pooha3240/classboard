@@ -4,6 +4,7 @@
  *   /ws               → 학급 DO (칠판 WebSocket, ?token=&device=)
  *   /eboard-api/*     → 학급 DO (REST. 경로는 jmschool판과 같게 둡니다)
  *   /probe-ws, /api/stats, /api/where → 검증용 DO (probe.html)
+ *   /eboard-api/uninstall/wipe-files → 설치 도우미 [지우기]: 저장판 R2 비우기(설치 키 필요)
  *   /api/health       → 버전·이 요청을 받은 데이터센터
  *   그 밖             → web/ 정적 파일 (assets 가 먼저 처리하고, 없는 경로만 여기로 옴)
  */
@@ -90,6 +91,25 @@ export default {
           return json({ detail: { error: "bad_setup_key", message: "설치 키가 맞지 않습니다" } }, 403);
         }
         return classRoom(env).fetch(forward(req, { "x-cb-setup": "ok" }));
+      }
+      if (p === "/eboard-api/uninstall/wipe-files" && req.method === "POST") {
+        // 설치 도우미의 [지우기] 전용: 저장판 R2 버킷을 비웁니다(비어 있어야 버킷을 지울 수 있음).
+        // 설치 키는 Cloudflare 에 로그인한 사람만 바꿀 수 있고, 설치 키로는 원래 교사 계정도 다시 정할 수 있으므로 같은 권한입니다.
+        if (!env.SETUP_KEY) return json({ detail: { error: "no_setup_key", message: "SETUP_KEY 비밀값이 없습니다" } }, 503);
+        const body = (await req.json().catch(() => ({}))) as { setup_key?: string };
+        if (!sameKey(String(body.setup_key ?? ""), env.SETUP_KEY)) {
+          return json({ detail: { error: "bad_setup_key", message: "설치 키가 맞지 않습니다" } }, 403);
+        }
+        if (!env.FILES) return json({ ok: true, deleted: 0, done: true });
+        let deleted = 0;
+        let done = false;
+        for (let i = 0; i < 20; i++) {          // 한 번에 최대 2만 개. 남으면 도우미가 다시 부름
+          const l = await env.FILES.list({ limit: 1000 });
+          if (l.objects.length === 0) { done = true; break; }
+          await env.FILES.delete(l.objects.map((o) => o.key));
+          deleted += l.objects.length;
+        }
+        return json({ ok: true, deleted, done });
       }
       return classRoom(env).fetch(forward(req));
     }

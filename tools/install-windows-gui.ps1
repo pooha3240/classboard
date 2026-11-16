@@ -28,6 +28,7 @@ try { $AppVersion = [string](Get-Content -LiteralPath (Join-Path $Root 'package.
 $script:Cancel = $false
 $script:Running = $false
 $script:CloseAfter = $false
+$script:Action = 'install'
 $script:Proc = $null
 $script:LogBox = $null
 $script:NodeExe = $null
@@ -470,6 +471,14 @@ $lnkMode.Font = $FS
 $lnkMode.Margin = New-Object Windows.Forms.Padding(3, [int]($U * 0.3), 3, 0)
 [void](Add-Row 'modelink' '' $lnkMode)
 
+$lnkRemove = New-Object Windows.Forms.LinkLabel
+$lnkRemove.Text = '칠판 지우기(Cloudflare 와 이 PC 에서 삭제)'
+$lnkRemove.AutoSize = $true
+$lnkRemove.Font = $FS
+$lnkRemove.LinkColor = $cRed
+$lnkRemove.Margin = New-Object Windows.Forms.Padding(3, [int]($U * 0.6), 3, 0)
+[void](Add-Row 'remove' '' $lnkRemove)
+
 # ── 화면 2: 진행 ──
 $pgRun = New-Object Windows.Forms.TableLayoutPanel
 $pgRun.Dock = 'Fill'
@@ -593,6 +602,7 @@ function Show-Page([string]$name) {
 
 function Apply-Mode {
   $upd = ($script:Mode -eq 'update')
+  $lblTitle.Text = 'classboard 전자칠판 설치'
   foreach ($k in @('sub', 'class', 'name', 'id', 'pw', 'pw2')) { Show-Row $k (-not $upd) }
   Show-Row 'update' $upd
   if ($upd) {
@@ -620,6 +630,7 @@ function Set-Buttons([string]$state) {
     'running' { $btnMain.Text = '진행 중…'; $btnMain.Enabled = $false; $btnClose.Text = '취소' }
     'error'   { $btnMain.Text = '다시 시도'; $btnBack.Visible = $true; $btnOpenLog.Visible = $true }
     'done'    { $btnMain.Text = '칠판 열기' }
+    'removed' { $btnMain.Text = '폴더 열기'; $btnLog.Visible = $false }
   }
 }
 
@@ -777,12 +788,12 @@ function Ensure-Login {
   if (-not $script:CfToken) { throw 'Cloudflare 로그인 정보를 읽지 못했습니다. [다시 시도]를 누르세요.' }
 }
 
-function Ensure-Account {
+function Select-Account {
   try { $accts = @((Cf GET '/accounts?per_page=50').result) } catch { throw "Cloudflare 계정 목록을 읽지 못했습니다. ($($_ -replace '^CF:',''))" }
   if ($accts.Count -eq 0) { throw 'Cloudflare 계정을 찾지 못했습니다. 가입 인증 메일의 링크를 눌렀는지 확인하세요.' }
   $acct = $null
-  if ($script:Mode -eq 'update' -and $Info -and $Info.account_id) { $acct = @($accts | Where-Object { $_.id -eq $Info.account_id })[0] }
-  if (-not $acct -and $script:Mode -eq 'update' -and $Info -and $Info.account_id) {
+  if (($script:Mode -eq 'update' -or $script:Action -eq 'uninstall') -and $Info -and $Info.account_id) { $acct = @($accts | Where-Object { $_.id -eq $Info.account_id })[0] }
+  if (-not $acct -and $script:Mode -eq 'update' -and $script:Action -eq 'install' -and $Info -and $Info.account_id) {
     $a = Msg "이 PC 에서 칠판을 설치했던 계정($($Info.account_name))이 아닌 다른 계정으로 로그인되어 있습니다.`n계속하면 이 계정에 칠판을 새로 올립니다(원래 칠판의 판서·자료는 옮겨지지 않습니다).`n`n원래 계정으로 하려면 [아니요]를 누른 뒤 [이전]에서 '다른 Cloudflare 계정으로 로그인하기'를 체크하고 다시 하세요.`n이 계정에 계속 올릴까요?" 'YesNo' 'Warning'
     if ($a -ne 'Yes') { throw '원래 계정으로 로그인한 뒤 다시 하세요.' }
   }
@@ -795,6 +806,11 @@ function Ensure-Account {
   $script:Account = $acct
   $env:CLOUDFLARE_ACCOUNT_ID = $acct.id
   Log "계정: $($acct.name)"
+}
+
+function Ensure-Account {
+  Select-Account
+  $acct = $script:Account
 
   # 저장판: R2 가 켜져 있는지 먼저 확인
   if ($script:Edition -eq 'storage') {
@@ -965,6 +981,7 @@ function Do-Setup {
 }
 
 function Do-Install {
+  $script:Action = 'install'
   $script:Running = $true
   $script:Cancel = $false
   $script:KeyNew = $false
@@ -1075,9 +1092,218 @@ function Do-Install {
   if ($script:CloseAfter) { $form.Close() }
 }
 
+# ───────────── 지우기 ─────────────
+
+# 칠판 Worker 가 이 계정에 있는지, 연결된 R2 버킷
+function Get-Board {
+  $o = [pscustomobject]@{ Exists = $true; Buckets = @() }
+  try {
+    $r = Cf GET "/accounts/$($script:Account.id)/workers/scripts/classboard/settings"
+    $o.Buckets = @(@($r.result.bindings) | Where-Object { $_.type -eq 'r2_bucket' -and $_.bucket_name } | ForEach-Object { [string]$_.bucket_name })
+  } catch {
+    if ("$_" -match '10007|not found|does not exist') { $o.Exists = $false }
+    else { Log "칠판 설정을 읽지 못했습니다(계속 진행): $_" }
+  }
+  # 설정을 못 읽었거나 Worker 가 이미 없어도, 자동으로 만들어진 버킷이 남아 있으면 지움
+  if ($o.Buckets -notcontains 'classboard-files') {
+    try { [void](Cf GET "/accounts/$($script:Account.id)/r2/buckets/classboard-files"); $o.Buckets += 'classboard-files' } catch { }
+  }
+  return $o
+}
+
+function Confirm-Typed([string]$word) {
+  $why = ''
+  while ($true) {
+    $msg = "정말 지우려면 아래 칸에 '$word' 를 그대로 넣고 [확인]을 누르세요.`n지운 칠판은 되살릴 수 없습니다."
+    if ($why) { $msg = "$why`n`n$msg" }
+    $v = Ask-Text '칠판 지우기 확인' $msg
+    if ($null -eq $v) { throw '지우기를 멈췄습니다. 아무것도 지우지 않았습니다.' }
+    if ($v -eq $word) { return }
+    $why = "'$v' 은(는) '$word' 와 다릅니다."
+  }
+}
+
+# 버킷은 비어 있어야 지울 수 있음. 바깥에서는 버킷 안 파일 목록을 볼 수 없으므로 칠판(Worker)이 직접 비움
+function Wipe-Files {
+  $url = "https://classboard.$($script:Sub).workers.dev"
+  $script:Url = $url
+  Set-Status '저장판 자료를 지울 수 있게 칠판을 준비하는 중…'
+  Put-SetupKey
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  $redeployed = $false
+  $total = 0
+  while ($true) {
+    try {
+      $r = (Post-Json "$url/eboard-api/uninstall/wipe-files" @{ setup_key = $script:Key } 60) | ConvertFrom-Json
+      $total += [int]$r.deleted
+      Set-Status "저장판 자료를 지우는 중… ($total 개)"
+      if ($r.done) { Log "R2 파일 $total 개를 지웠습니다."; return $true }
+      $sw.Restart()
+      continue
+    } catch {
+      if ("$_" -eq 'CANCELLED') { throw }
+      $e = Web-Error $_.Exception
+      Log "  자료 지우기 응답: $($e.Status) $($e.Code) $($e.Message)"
+      if ($e.Status -eq 404 -and -not $redeployed) {
+        # 예전 판이라 지우기 기능이 없음 → 이 폴더의 판으로 먼저 올림
+        Set-Status '예전 판이라 지우기 기능이 없어 새 판으로 먼저 올리는 중…'
+        $script:Conf = 'wrangler.storage.jsonc'
+        Do-Deploy
+        $redeployed = $true
+        $sw.Restart()
+        continue
+      }
+      if ($sw.Elapsed.TotalSeconds -gt 120) { return $false }
+      Wait-Ms 4000
+    }
+  }
+}
+
+function Clean-Pc {
+  Set-Status '이 PC 의 Cloudflare 로그인을 끊는 중…'
+  try { [void](WR @('logout')) } catch { if ("$_" -eq 'CANCELLED') { throw } }
+  Set-Status '이 PC 에 남은 설치 파일을 지우는 중…'
+  $desk = [Environment]::GetFolderPath('Desktop')
+  if ($desk) { Remove-Item -LiteralPath (Join-Path $desk 'classboard-설치정보.txt') -Force -ErrorAction SilentlyContinue }
+  foreach ($n in @('install.json', 'edition.txt', 'deploy-output.ndjson')) { Remove-Item -LiteralPath (Join-Path $Work $n) -Force -ErrorAction SilentlyContinue }
+  $nodeDir = Join-Path $Work 'node'
+  if (Test-Path -LiteralPath $nodeDir) {
+    # 받아 둔 Node.js 를 쓰고 있으면 PATH 에서 빼고 지움
+    $env:Path = (($env:Path -split ';') | Where-Object { $_ -and -not $_.StartsWith($nodeDir, [StringComparison]::OrdinalIgnoreCase) }) -join ';'
+    Remove-Dir $nodeDir
+  }
+  Remove-Dir (Join-Path $Root 'node_modules')
+}
+
+# 파일이 많은 폴더는 창이 멈추지 않게 따로 지움
+function Remove-Dir([string]$dir) {
+  if (-not (Test-Path -LiteralPath $dir)) { return }
+  try { [void](Run-Proc 'cmd.exe' @('/d', '/c', 'rmdir', '/s', '/q', $dir) -Quiet) } catch { if ("$_" -eq 'CANCELLED') { throw } }
+  if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+function Do-Uninstall {
+  $script:Action = 'uninstall'
+  $script:Running = $true
+  $script:Cancel = $false
+  $script:Key = $null
+  $script:Sub = $null
+  $script:Leftover = @()
+  $script:RemovedBoard = $false
+  $script:RemovedBuckets = @()
+  $script:Edition = 'storage'
+  $script:Conf = 'wrangler.storage.jsonc'
+  Init-Steps @('설치 도구 준비', 'Cloudflare 로그인', '계정과 칠판 확인', '저장판 자료 비우기', '칠판 지우기', '이 PC 정리')
+  Show-Page 'run'
+  Set-Buttons 'running'
+  $bar.Visible = $true
+  $bar.Style = 'Marquee'
+  $lblTitle.Text = 'classboard 전자칠판 지우기'
+  $lblSub.Text = '창을 닫지 말고 기다려 주세요.'
+  Log '── 시작: 지우기'
+  $cur = 0
+  try {
+    Set-Step 0 'run'; Set-Status '설치 도구를 준비하는 중입니다…'
+    Ensure-Node; Ensure-Wrangler
+    Set-Step 0 'ok'
+
+    $cur = 1; Set-Step 1 'run'; Set-Status 'Cloudflare 로그인을 확인하는 중…'
+    Ensure-Login
+    Set-Step 1 'ok'
+
+    $cur = 2; Set-Step 2 'run'; Set-Status '칠판이 어느 계정에 있는지 확인하는 중…'
+    Select-Account
+    try { $script:Sub = (Cf GET "/accounts/$($script:Account.id)/workers/subdomain").result.subdomain } catch { }
+    $board = Get-Board
+    if (-not $board.Exists -and $board.Buckets.Count -eq 0) {
+      $a = Msg "이 계정($($script:Account.name))에는 칠판이 없습니다.`n이 PC 에 남은 설치 파일과 로그인만 정리할까요?" 'YesNo' 'Question'
+      if ($a -ne 'Yes') { throw '지우기를 멈췄습니다. 아무것도 지우지 않았습니다.' }
+    } else {
+      $word = 'classboard'
+      if ($script:Sub) { $word = [string]$script:Sub }
+      $what = "계정: $($script:Account.name)"
+      if ($script:Sub) { $what += "`n칠판 주소: https://classboard.$($script:Sub).workers.dev" }
+      if ($board.Buckets.Count -gt 0) { $what += "`n저장판 R2 버킷: $($board.Buckets -join ', ')" }
+      Set-Status "지울 칠판:`n$what"
+      Confirm-Typed $word
+    }
+    Set-Step 2 'ok'
+
+    $cur = 3; Set-Step 3 'run'
+    if ($board.Buckets.Count -eq 0) { Set-Step 3 'skip' }
+    else {
+      $wiped = $false
+      if ($board.Exists -and $script:Sub) { $wiped = Wipe-Files }
+      if (-not $wiped) {
+        Log 'R2 자료를 칠판으로 비우지 못했습니다. 버킷 지우기만 시도합니다.'
+      }
+      Set-Step 3 'ok'
+    }
+
+    $cur = 4; Set-Step 4 'run'
+    if ($board.Exists) {
+      Set-Status 'Cloudflare 에서 칠판을 지우는 중…'
+      $r = WR @('delete', '--name', 'classboard', '--force')
+      if ($r.Code -ne 0) { throw "칠판을 지우지 못했습니다: $(First-Error $r.All)" }
+      $script:RemovedBoard = $true
+    }
+    foreach ($b in $board.Buckets) {
+      Set-Status "R2 버킷 $b 을(를) 지우는 중…"
+      $r = WR @('r2', 'bucket', 'delete', $b)
+      if ($r.Code -eq 0) { $script:RemovedBuckets += $b } else { $script:Leftover += $b; Log "버킷을 지우지 못했습니다: $(First-Error $r.All)" }
+    }
+    Set-Step 4 'ok'
+
+    $cur = 5; Set-Step 5 'run'
+    Clean-Pc
+    Set-Step 5 'ok'
+    Show-Removed
+  } catch {
+    $msg = "$($_.Exception.Message)"
+    if (-not $msg) { $msg = "$_" }
+    if ($msg -eq 'CANCELLED') { $msg = '취소했습니다.' }
+    Log "오류: $msg"
+    Set-Step $cur 'fail'
+    Set-Status "지우기를 마치지 못했습니다.`n$msg" $cRed
+    $lblSub.Text = '[다시 시도]를 누르면 남은 것만 이어서 지웁니다.'
+    $bar.Visible = $false
+    $lnkLogin.Visible = $false
+    Set-Buttons 'error'
+  } finally {
+    $script:Running = $false
+    $script:Proc = $null
+  }
+  if ($script:CloseAfter) { $form.Close() }
+}
+
+function Show-Removed {
+  Show-Page 'done'
+  Set-Buttons 'removed'
+  $lnkUrl.Visible = $false
+  $doneBtns.Visible = $false
+  $lblDoneTitle.Text = [string][char]0x2713 + ' 칠판을 지웠습니다'
+  $lblSub.Text = '설치한 것을 모두 정리했습니다.'
+  $t = @()
+  if ($script:RemovedBoard) { $t += 'Cloudflare 에서 칠판(판서 기록·자료·설정)을 지웠습니다.' }
+  if ($script:RemovedBuckets.Count -gt 0) { $t += "저장판 R2 버킷($($script:RemovedBuckets -join ', '))도 지웠습니다." }
+  if ($script:Leftover.Count -gt 0) {
+    $lblDoneTitle.ForeColor = [Drawing.Color]::FromArgb(154, 103, 0)
+    $t += "R2 버킷 $($script:Leftover -join ', ') 은(는) 지우지 못했습니다. Cloudflare 대시보드 → R2 Object Storage 에서 버킷을 비운 뒤 직접 지우세요."
+  }
+  $t += '이 PC 의 설치 도구·설치 정보·바탕화면 메모를 지우고, Cloudflare 로그인도 끊었습니다.'
+  $t += ''
+  $t += '남은 것'
+  $t += '  · 압축을 푼 classboard 폴더: 이 창을 닫은 뒤 직접 지우세요. [폴더 열기]를 누르면 열립니다.'
+  $t += '  · Cloudflare 계정과 workers.dev 주소 이름: 비용이 들지 않습니다. 다시 설치하면 같은 주소를 씁니다.'
+  $lblDone.Text = ($t -join "`n")
+  try { Remove-Item -LiteralPath $LogPath -Force -ErrorAction SilentlyContinue } catch { }
+}
+
 function Show-Done {
   Show-Page 'done'
   Set-Buttons 'done'
+  $lnkUrl.Visible = $true
+  $doneBtns.Visible = $true
   $lnkUrl.Text = $script:Url
   $upd = ($script:Mode -eq 'update')
   $t = @()
@@ -1137,7 +1363,8 @@ $btnMain.Add_Click({
       }
       if (Validate-Form) { Do-Install }
     }
-    'error' { Do-Install }
+    'error' { if ($script:Action -eq 'uninstall') { Do-Uninstall } else { Do-Install } }
+    'removed' { Start-Process explorer.exe -ArgumentList ('"' + $Root + '"') }
     'done'  { Start-Process "$($script:Url)/login" }
     'done-log' { Start-Process "$($script:Url)/login" }
   }
@@ -1154,6 +1381,11 @@ $btnOpenLog.Add_Click({ Start-Process notepad.exe -ArgumentList ('"' + $LogPath 
 $btnCopy.Add_Click({ try { [Windows.Forms.Clipboard]::SetText($script:Url); $btnCopy.Text = '복사했습니다' } catch { } })
 $btnMemo.Add_Click({ if ($script:MemoPath) { Start-Process notepad.exe -ArgumentList ('"' + $script:MemoPath + '"') } })
 $lnkUrl.Add_LinkClicked({ Start-Process "$($script:Url)/login" })
+$lnkRemove.Add_LinkClicked({
+  $a = Msg "칠판을 지우면 판서 기록·자료·설정이 모두 지워지고 되살릴 수 없습니다.`n`n백업을 내려받아 두었나요?`n(칠판 메뉴 → 교시·시간표 설정 → 저장 공간과 백업 → 백업 내려받기)`n`n[예] 백업했거나 필요 없음, 계속 진행`n[아니요] 멈추고 백업부터 하기" 'YesNo' 'Warning'
+  if ($a -ne 'Yes') { return }
+  Do-Uninstall
+})
 $lnkMode.Add_LinkClicked({
   if ($script:Mode -eq 'update') { $script:Mode = 'install' } else { $script:Mode = 'update' }
   Apply-Mode

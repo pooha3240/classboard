@@ -141,4 +141,18 @@ npx wrangler secret put SETUP_KEY     # 설치 키를 직접 정해 입력(아�
 
 ## 9. 지우기
 
-Cloudflare 대시보드 → Workers & Pages → classboard → Settings → **Delete**. 판서 기록과 자료가 모두 지워지고 되살릴 수 없습니다. 저장판은 R2 Object Storage 에서 classboard 버킷도 지웁니다.
+지우면 판서 기록·자료·설정이 모두 사라지고 되살릴 수 없습니다. 남기려면 먼저 8번의 백업을 내려받으세요.
+
+**방법 1(설치 도우미)**: `install-windows.bat` 을 실행하고 설치 창 아래의 **칠판 지우기** 를 누릅니다.
+1. 백업을 했는지 묻습니다.
+2. Cloudflare 로그인을 확인하고, 지울 칠판(계정·주소·저장판 버킷)을 보여 줍니다.
+3. 실수로 지우지 않도록 **칠판 주소 이름**(예: `ulsan-kim5`)을 그대로 넣어야 진행됩니다.
+4. 도우미가 차례로 지웁니다.
+   - 저장판이면 R2 자료를 비운 뒤 버킷까지 지웁니다.
+   - Cloudflare 에서 칠판을 지웁니다.
+   - 이 PC 에 남은 것(받아 둔 Node.js, 설치 정보, 바탕화면 메모)을 지우고, 이 PC 의 Cloudflare 로그인을 끊습니다.
+5. 압축을 푼 classboard 폴더는 설치 창을 닫은 뒤 직접 지웁니다.
+
+**직접 지우기(방법 2 또는 Windows 가 아닐 때)**: Cloudflare 대시보드 → Workers & Pages → classboard → Settings → **Delete**. 저장판은 R2 Object Storage 에서 `classboard-files` 버킷을 비운 뒤 지웁니다. 방법 2는 GitHub 의 classboard 저장소(Fork)도 필요 없으면 Settings → Delete this repository 로 지웁니다.
+
+Cloudflare 계정과 workers.dev 주소 이름은 남습니다. 비용이 들지 않고, 다시 설치하면 같은 주소를 씁니다.
