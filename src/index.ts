@@ -19,6 +19,19 @@ export interface Env {
   ASSETS: Fetcher;
   SETUP_KEY?: string;
   FILES?: R2Bucket;          // 확장판(wrangler.storage.jsonc)에서만 연결
+  EDITION?: string;          // "local": 로컬판(교사 PC 에서 wrangler dev 로 실행, wrangler.local.jsonc)
+}
+
+const editionOf = (env: Env) => (env.EDITION === "local" ? "local" : env.FILES ? "storage" : "basic");
+
+/** 로컬판: 이 PC 주소(localhost·127.0.0.1)로 온 요청만 받음 — 다른 사이트가 DNS 로 이 PC 를 가리키는 공격(rebinding) 막기 */
+function localHostOk(req: Request, url: URL): boolean {
+  if (!["localhost", "127.0.0.1"].includes(url.hostname)) return false;
+  const origin = req.headers.get("Origin");
+  if (origin && origin !== "null") {
+    try { if (!["localhost", "127.0.0.1"].includes(new URL(origin).hostname)) return false; } catch { return false; }
+  }
+  return true;
 }
 
 function json(data: unknown, status = 200): Response {
@@ -55,6 +68,8 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     const p = url.pathname;
+    const local = env.EDITION === "local";
+    if (local && !localHostOk(req, url)) return json({ error: "local_only", message: "로컬판은 이 PC 에서만 열 수 있습니다" }, 421);
 
     if (p === "/helper.zip" && req.method === "GET") return helperZip(req, env.ASSETS);
 
@@ -81,6 +96,19 @@ export default {
     }
 
     if (p.startsWith("/eboard-api/")) {
+      if (local && p === "/eboard-api/auth/local" && req.method === "POST") return classRoom(env).fetch(forward(req, { "x-cb-local": "ok" }));
+      if (local && p === "/eboard-api/setup" && req.method === "POST") {
+        // 로컬판 처음 설정: 설치 키·교사 아이디 없이(이 PC 에서만 열리고 로그인도 하지 않음). 이미 설정했으면 막음
+        const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+        const st = await classRoom(env).fetch(new Request(new URL("/eboard-api/setup/status", url)));
+        if (((await st.json().catch(() => ({}))) as { configured?: boolean }).configured) {
+          return json({ detail: { error: "configured", message: "이미 처음 설정을 했습니다" } }, 409);
+        }
+        const rnd = crypto.getRandomValues(new Uint8Array(18));
+        const body = JSON.stringify({ ...b, login_id: "local", password: btoa(String.fromCharCode(...rnd)) });
+        const headers = new Headers({ "content-type": "application/json", "x-cb-setup": "ok" });
+        return classRoom(env).fetch(new Request(url.toString(), { method: "POST", headers, body }));
+      }
       if (p === "/eboard-api/setup" && req.method === "POST") {
         // 설치 키(Cloudflare 비밀값 SETUP_KEY)는 여기서만 확인합니다.
         if (!env.SETUP_KEY) {
@@ -116,8 +144,8 @@ export default {
 
     if (p === "/api/health") {
       const cf = (req as Request & { cf?: { colo?: string; country?: string } }).cf;
-      return json({ ok: true, version: SERVER_VERSION, edition: env.FILES ? "storage" : "basic",
-        colo: cf?.colo ?? null, country: cf?.country ?? null, setup_key: !!env.SETUP_KEY });
+      return json({ ok: true, version: SERVER_VERSION, edition: editionOf(env),
+        colo: cf?.colo ?? null, country: cf?.country ?? null, setup_key: local || !!env.SETUP_KEY });
     }
 
     if (p === "/probe-ws") {

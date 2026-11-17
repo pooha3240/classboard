@@ -16,7 +16,7 @@ import { DurableObject } from "cloudflare:workers";
 import { Archiver, ARCHIVE_AFTER_DAYS } from "./archive";
 import { Backup, BACKUP_VERSION } from "./backup";
 import { PlanStore, PlanError, neisCall, neisSchools, NEIS_TT, type NeisCfg } from "./plan";
-import { MediaStore, MediaError, MAX_PDF_PAGES, R2_CAP, imageMeta, pageSizeFor, sniffImage } from "./media";
+import { MediaStore, MediaError, MAX_PDF_PAGES, R2_CAP, LOCAL_BUDGET, imageMeta, pageSizeFor, sniffImage } from "./media";
 import { sign, verify, TokenError, randomKey, hashPassword, checkPassword, sha256, shortSig, type TokenPayload } from "./lib/token";
 import { currentPeriod, kstNow, nextBoundary, periodLabel, normalize, type Bell } from "./lib/periods";
 import {
@@ -24,7 +24,7 @@ import {
   validateObj, cleanWebUrl, cleanColor, num, localVideoMeta, type Obj,
 } from "./lib/validate";
 
-export const SERVER_VERSION = "0.13.0";
+export const SERVER_VERSION = "0.14.0";
 
 const TEACHER_DEVICES = new Set(["display", "teacher-pc", "teacher-tablet"]);
 const TOKEN_DAYS = 30;
@@ -114,6 +114,8 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
   private media: MediaStore;
   private plan: PlanStore;
   private r2: R2Bucket | undefined;
+  private local: boolean;                 // 로컬판(교사 PC 한 대): 한도 크게, 판서 기록 안 지움, 학생 접속 없음
+  private budget: number;
   private archive: Archiver;
   private backup: Backup;
   private pages = new Map<number, PageState>();
@@ -124,8 +126,10 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
     super(ctx, env);
     this.sql = ctx.storage.sql;
     this.r2 = (env.FILES as R2Bucket | undefined) ?? undefined;       // 확장판이면 R2 가 연결됨
-    this.media = new MediaStore(this.sql, { total: DB_BUDGET, dbSize: () => this.sql.databaseSize, pinned: () => this.plan.pinnedSets(),
-      r2: this.r2, archived: () => this.archivedBytes() });
+    this.local = env.EDITION === "local";
+    this.budget = this.local ? LOCAL_BUDGET : DB_BUDGET;
+    this.media = new MediaStore(this.sql, { total: this.budget, dbSize: () => this.sql.databaseSize, pinned: () => this.plan.pinnedSets(),
+      r2: this.r2, archived: () => this.archivedBytes(), local: this.local });
     this.plan = new PlanStore(this.sql, this.media);
     this.archive = new Archiver(this.sql, this.r2);
     this.backup = new Backup(this.sql, this.media, this.archive, (k) => this.cfg(k), (k, v) => this.setCfg(k, v));
@@ -361,7 +365,16 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       return json({ ...t, role: "teacher" });
     }
 
+    if (path === "/auth/local" && method === "POST") {
+      // 로컬판 전용: 이 PC 에서 연 칠판은 로그인 없이 교사로(Worker 가 로컬판·이 PC 주소인지 확인하고 머리글을 붙임)
+      if (!this.local || req.headers.get("x-cb-local") !== "ok") return fail(403, "forbidden", "로컬판에서만 씁니다");
+      if (!this.configured()) return fail(409, "not_configured", "아직 처음 설정을 하지 않았습니다");
+      const t = await this.tokenFor({ sub: this.cfg("login_id")!, name: this.cfg("teacher_name") ?? "", role: "teacher" });
+      return json({ ...t, role: "teacher" });
+    }
+
     const ip = req.headers.get("cf-connecting-ip") || "local";
+    if (this.local && path.startsWith("/student/")) return fail(403, "local_edition", "로컬판에는 학생 접속이 없습니다");
     if (path === "/student/class" && method === "GET") {
       if (!this.configured()) return fail(409, "not_configured", "아직 설치 설정을 하지 않았습니다");
       if (this.codeLocked(ip)) return fail(429, "locked", "코드를 여러 번 틀렸습니다. 10분 뒤에 다시 해 보세요");
@@ -540,16 +553,18 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       return fail(404, "not_found", "없는 시험 요청");
     }
 
-    /* 백업 내려받기·되살리기(기본판·확장판) */
+    /* 백업 내려받기·되살리기(모든 판, 같은 형식) */
     if (path.startsWith("/backup/")) {
       if (path === "/backup/part" && method === "GET") {
         if (!elev) return needPin();
-        return json(await this.backup.part(url.searchParams.get("cursor"), url.searchParams.get("media") === "1", SERVER_VERSION, this.r2 ? "storage" : "basic"));
+        return json(await this.backup.part(url.searchParams.get("cursor"), url.searchParams.get("media") === "1", SERVER_VERSION,
+          this.local ? "local" : this.r2 ? "storage" : "basic"));
       }
       if (u.dev) return loggedIn();                     // 되살리기는 교사 로그인(비밀번호 확인)으로만
       if (path === "/backup/restore/begin" && method === "POST") {
         const b = await body();
-        if (!(await checkPassword(String(b.password ?? ""), this.cfg("pw_hash")!))) return fail(403, "bad_password", "비밀번호가 맞지 않습니다");
+        // 로컬판은 로그인이 없으므로(이 PC 에서만 열림) 비밀번호를 묻지 않음
+        if (!this.local && !(await checkPassword(String(b.password ?? ""), this.cfg("pw_hash")!))) return fail(403, "bad_password", "비밀번호가 맞지 않습니다");
         const meta = (b.meta ?? {}) as Json;
         if (meta.t !== "meta" || Number(meta.v) !== BACKUP_VERSION) return fail(400, "bad_backup", "classboard 백업 파일이 아니거나 읽을 수 없는 판입니다");
         await this.backup.wipe();
@@ -802,7 +817,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
 
   private storage() {
     const db = this.sql.databaseSize;
-    return { db, budget: DB_BUDGET, media: this.media.usage("do"),
+    return { db, budget: this.budget, media: this.media.usage("do"), local: this.local,
       r2: this.r2 ? { cap: R2_CAP, media: this.media.usage("r2"), archive: this.archive.totalBytes() } : null };
   }
 
@@ -923,7 +938,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       ...(user.role === "student" ? { num: user.num ?? 0, grant: null } : {}) };
     server.serializeAttachment(att);
     server.send(JSON.stringify({ e: "hello", d: { me: user, device, server_version: SERVER_VERSION, server_ms: Date.now(),
-      features: { photo: false, watch: false } } }));
+      edition: this.local ? "local" : this.r2 ? "storage" : "basic", features: { photo: false, watch: false } } }));
     if (user.role === "student") this.broadcastCalls();
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -1144,7 +1159,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
     if (Math.random() < (this.r2 ? 0.25 : 0.05)) {       // 가끔만: 올리다 끊긴 자료, 오래된 판서 기록(확장판은 R2 로 옮김)
       await this.media.sweep();
       for (const ps of this.pages.values()) if (ps.seq > ps.saved_seq) this.savePage(ps);
-      let prune = !this.r2;
+      let prune = !this.r2 && !this.local;              // 로컬판: PC 디스크라 재생 기록을 지우지 않음
       if (this.r2) {                                     // 확장판: 지우지 않고 R2 로 옮김. R2 한도에 걸리면 기본판처럼 정리
         const cutoff = new Date(Date.now() + 9 * 3600e3 - ARCHIVE_AFTER_DAYS * 86400e3).toISOString().slice(0, 10);
         const left = R2_CAP - this.media.usage("r2") - this.archive.totalBytes();

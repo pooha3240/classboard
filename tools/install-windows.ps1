@@ -159,7 +159,8 @@ try {
   Write-Host "    판서 재생    계속           60일             계속                  계속"
   Write-Host "    동영상 파일  이 기기 재생   이 기기 재생     이 기기 재생          서버에 올려 공유"
   Write-Host "    합반·원격    안 됨          안 됨            안 됨                 됨"
-  Write-Host "    상태         준비 중        설치 가능        설치 가능             곧 릴리스"
+  Write-Host "    상태         시험판         설치 가능        설치 가능             곧 릴리스"
+  Write-Host "    (로컬판은 설치 창에서만 설치할 수 있습니다. 이 글자 화면은 기본판·확장판만 설치합니다.)"
   Write-Host ""
   Write-Host "  어느 판을 설치할까요?" -ForegroundColor Cyan
   Write-Host "    1) 기본판 - 카드 등록 없이 무료. 자료 700MB, 판서 재생 60일"

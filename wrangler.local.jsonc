@@ -1,0 +1,25 @@
+// classboard 로컬판 설정: 교사 PC 에서 wrangler dev 로 돌림(Cloudflare 에 올리지 않음).
+// 기본판(wrangler.jsonc)과 같은 코드, EDITION=local 만 다름. 실행: tools/local/classboard-local.ps1
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "classboard-local",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "./web",
+    "binding": "ASSETS"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "ROOM", "class_name": "ClassRoom" },
+      { "name": "PROBE", "class_name": "ProbeRoom" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ClassRoom"] },
+    { "tag": "v2", "new_sqlite_classes": ["ProbeRoom"] }
+  ],
+  "vars": { "EDITION": "local" },
+  "dev": { "ip": "127.0.0.1", "port": 8790, "local_protocol": "http" },
+  "send_metrics": false
+}

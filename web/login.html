@@ -33,16 +33,18 @@
     <h1>처음 설정</h1>
     <p class="sub">이 칠판을 쓸 학급과 교사 계정을 만듭니다. 설치할 때 정한 <b>설치 키(SETUP_KEY)</b>가 필요합니다.</p>
     <div class="note" id="no-key" hidden>Cloudflare 설정에 SETUP_KEY 비밀값이 아직 없습니다. 설치 안내의 '설치 키 넣기'를 먼저 해 주세요.</div>
-    <label for="s-key">설치 키</label><input id="s-key" type="password" autocomplete="off" required>
+    <div id="s-keyrow"><label for="s-key">설치 키</label><input id="s-key" type="password" autocomplete="off" required></div>
     <div class="row">
       <div><label for="s-grade">학년</label><input id="s-grade" type="number" min="1" max="6" required></div>
       <div><label for="s-class">반</label><input id="s-class" type="number" min="1" max="30" required></div>
       <div><label for="s-size">인원</label><input id="s-size" type="number" min="1" max="60" required></div>
     </div>
     <label for="s-name">이름(칠판에 보일 이름)</label><input id="s-name" maxlength="20" placeholder="예: 김선생">
+    <div id="s-account">
     <label for="s-id">아이디 (영문·숫자)</label><input id="s-id" autocomplete="username" required>
     <label for="s-pw">비밀번호 (8자 이상)</label><input id="s-pw" type="password" autocomplete="new-password" required>
     <label for="s-pw2">비밀번호 확인</label><input id="s-pw2" type="password" autocomplete="new-password" required>
+    </div>
     <button type="submit">만들기</button>
     <div class="err" id="s-err"></div>
   </form>
@@ -83,11 +85,33 @@ async function post(path, body) {
   return j;
 }
 
+// 로컬판: 이 PC 에서만 열리므로 로그인 없이 교사로 들어가고, 이 기기를 '교사 PC'·이 학급으로 정해 둠
+let isLocal = false;
+async function localEnter(klass) {
+  const t = await post('/auth/local', {});
+  saveToken({ token: t.token, exp: t.exp });
+  try {
+    localStorage.setItem('eboard.device', JSON.stringify('teacher-pc'));
+    localStorage.setItem('eboard.class', JSON.stringify({ grade: klass.grade, class: klass.class }));
+  } catch { /* 저장 불가 */ }
+  location.replace('/');
+}
+
 async function start() {
   const [st, health] = await Promise.all([
     fetch('/eboard-api/setup/status', { cache: 'no-store' }).then((r) => r.json()),
     fetch('/api/health', { cache: 'no-store' }).then((r) => r.json()).catch(() => ({})),
   ]);
+  isLocal = health.edition === 'local';
+  if (isLocal) {
+    if (st.configured) { await localEnter(st.klass); return; }
+    // 처음 설정: 학급과 이름만(설치 키·아이디·비밀번호 없음)
+    $('s-keyrow').hidden = true; $('s-account').hidden = true;
+    for (const id of ['s-key', 's-id', 's-pw', 's-pw2']) $(id).required = false;
+    document.querySelector('#setup .sub').textContent = '로컬판: 이 PC 에서만 쓰는 칠판입니다. 학급과 이름만 정하면 됩니다(로그인 없음).';
+    show('setup');
+    return;
+  }
   if (!st.configured) {
     $('no-key').hidden = health.setup_key !== false;
     show('setup');
@@ -106,6 +130,15 @@ async function login(id, pw) {
 $('setup').addEventListener('submit', async (e) => {
   e.preventDefault();
   const err = $('s-err'); err.textContent = '';
+  if (isLocal) {
+    e.submitter.disabled = true;
+    try {
+      const klass = { grade: +$('s-grade').value, class: +$('s-class').value };
+      await post('/setup', { ...klass, size: +$('s-size').value, name: $('s-name').value });
+      await localEnter(klass);
+    } catch (x) { err.textContent = x.message; e.submitter.disabled = false; }
+    return;
+  }
   if ($('s-pw').value !== $('s-pw2').value) { err.textContent = '비밀번호 확인이 다릅니다'; return; }
   e.submitter.disabled = true;
   try {

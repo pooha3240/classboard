@@ -522,6 +522,10 @@ body.bar-right .joint-chip { left: 16px; }
 .call-classes .chip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 700; }
 
 /* ── 동영상 배경(유튜브·동영상 파일): 각 기기가 직접 재생, 진행 기기만 조작 막대 ── */
+/* 로컬판(교사 PC 한 대): 다른 기기가 있어야 하는 기능 숨김 */
+body.ed-local #menu-devices, body.ed-local #menu-logout, body.ed-local #menu-joint,
+body.ed-local .ct-tabs [data-tab="call"] { display: none !important; }
+
 #stage .videobg { position: absolute; border: 0; object-fit: contain; background: #000; pointer-events: none; }
 /* 이 기기의 동영상 파일: 파일이 없는 기기는 미리보기 그림 + 위쪽 안내 카드(파일 고르기·허락) */
 #stage .video-local { display: flex; align-items: center; justify-content: center; overflow: hidden; }

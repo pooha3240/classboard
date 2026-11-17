@@ -316,7 +316,11 @@ function startNet() {
     }
   });
   net.addEventListener('rtt', (e) => { $('#rtt').textContent = `${e.detail}ms`; });
-  net.addEventListener('hello', (e) => checkVersion(e.detail.server_version));
+  net.addEventListener('hello', (e) => {
+    checkVersion(e.detail.server_version);
+    // 로컬판: 학생 호출·전자칠판 등록·로그아웃처럼 다른 기기가 있어야 하는 메뉴를 숨김(css: body.ed-local)
+    document.body.classList.toggle('ed-local', e.detail.edition === 'local');
+  });
   net.addEventListener('op:batch', (e) => onOpBatch(e.detail));
   net.addEventListener('stroke:live', (e) => {
     if (board.page && e.detail.page_id === board.page.id) tools.remoteLive(e.detail);

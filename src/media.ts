@@ -13,6 +13,7 @@
 import { randomKey } from "./lib/token";
 
 export const MEDIA_QUOTA = 700 * 1000 * 1000;     // 700MB (기본판, DO 안)
+export const LOCAL_BUDGET = 20 * 1000 * 1000 * 1000;   // 로컬판: 교사 PC 디스크. 판서 기록 + 자료 20GB 까지
 export const R2_CAP = 8 * 1000 * 1000 * 1000;      // 확장판: R2 전체(자료 + 보관한 판서 기록) 8GB — 무료 10GB 를 넘지 않게
 export const R2_MEDIA_QUOTA = 6 * 1000 * 1000 * 1000;   // 그중 자료 6GB
 export const r2Key = (a: { id: number; key: string }, thumb = false) => `m/${a.id}/${a.key}${thumb ? ".t" : ""}`;
@@ -63,17 +64,21 @@ const kst = (t: number) => new Date(t + 9 * 3600e3).toISOString().slice(5, 16).r
 export class MediaStore {
   /** dbSize: 객체 전체 크기(판서 기록 포함). 자료는 MEDIA_QUOTA 와 '전체 예산 - 판서 기록' 중 작은 쪽까지 */
   constructor(private sql: SqlStorage, private budget: { total: number; dbSize: () => number; pinned?: () => Set<number>;
-    r2?: R2Bucket; archived?: () => number } = { total: Infinity, dbSize: () => 0 }) {}
+    r2?: R2Bucket; archived?: () => number; local?: boolean } = { total: Infinity, dbSize: () => 0 }) {}
 
   get r2(): R2Bucket | undefined { return this.budget.r2; }
   /** 새 자료를 둘 곳의 한도. 확장판: R2 자료 한도와 'R2 전체 - 보관한 판서 기록' 중 작은 쪽 */
   quota(): number {
     if (this.r2) return Math.max(0, Math.min(R2_MEDIA_QUOTA, R2_CAP - (this.budget.archived?.() ?? 0)));
     const other = Math.max(0, this.budget.dbSize() - this.usage("do"));
+    if (this.budget.local) return Math.max(0, this.budget.total - other);   // 로컬판: 자료 따로 한도 없음(전체 안에서)
     return Math.max(0, Math.min(MEDIA_QUOTA, this.budget.total - other));
   }
   /** 차시에 붙인 자료(자동 정리 안 함)의 한도 */
-  pinnedQuota(): number { return this.r2 ? 2 * 1000 * 1000 * 1000 : 300 * 1000 * 1000; }
+  pinnedQuota(): number {
+    if (this.budget.local) return 5 * 1000 * 1000 * 1000;
+    return this.r2 ? 2 * 1000 * 1000 * 1000 : 300 * 1000 * 1000;
+  }
   /** 새 자료가 들어가는 곳의 사용량 */
   activeUsage(): number { return this.usage(this.r2 ? "r2" : "do"); }
 
