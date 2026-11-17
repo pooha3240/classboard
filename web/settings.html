@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>교시·시간표 설정</title>
-<link rel="stylesheet" href="css/board.css?v=0.12.1">
-<link rel="stylesheet" href="css/pages.css?v=0.12.1">
+<link rel="stylesheet" href="css/board.css?v=0.14.0">
+<link rel="stylesheet" href="css/pages.css?v=0.14.0">
 </head>
 <body class="page-body" data-login="login.html">
   <header class="page-top">
@@ -83,7 +83,7 @@
       <p class="muted small"><b>지금 칠판의 판서 기록·진도표·자료가 모두 지워지고</b> 백업 내용으로 바뀝니다. 교사 계정·학급 코드·전자칠판 등록은 그대로입니다. 학교를 옮겨 새로 설치했을 때 씁니다.</p>
       <div class="neis-form">
         <label>백업 파일 <input type="file" id="rs-file" accept=".gz,.ndjson,application/gzip"></label>
-        <label>교사 비밀번호 <input type="password" id="rs-pw" autocomplete="current-password"></label>
+        <label id="rs-pwrow">교사 비밀번호 <input type="password" id="rs-pw" autocomplete="current-password"></label>
         <div class="row-end"><span></span><button type="button" class="chip danger" id="rs-go">되살리기</button></div>
       </div>
       <div id="rs-st" class="muted small"></div>
@@ -96,6 +96,6 @@
     </section>
   </main>
   <div id="toast" role="status" aria-live="polite"></div>
-  <script type="module" src="js/settings.js?v=0.12.1"></script>
+  <script type="module" src="js/settings.js?v=0.14.0"></script>
 </body>
 </html>

@@ -1,7 +1,12 @@
-// 동영상 배경(유튜브·올린 동영상 파일). 영상은 화면을 보내지 않고 각 기기가 직접 재생합니다.
+// 동영상 배경(유튜브·이 기기의 동영상 파일·올린 동영상 파일). 영상은 화면을 보내지 않고 각 기기가 직접 재생합니다.
+// 이 기기의 파일(src:'local'): 서버에 올리지 않음. 그 파일이 있는 기기만 재생하고, 없는 기기는 미리보기 그림과 '파일 고르기'.
 // 진행 기기(교사)가 재생·멈춤·위치를 바꾸면 서버가 {재생 중?, 위치, 시각}만 같은 방에 알리고,
 // 모든 기기는 서버 시계 기준으로 '지금 있어야 할 위치'를 계산해 따라갑니다(늦게 들어온 반도 그 자리부터).
+import { localKey, findLocal, grant, pickFile, remember } from './localvideo.js';
+import { askConfirm } from './ui.js';
+
 const $ = (s, el = document) => el.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const YT_HOST = 'https://www.youtube-nocookie.com';
 const fmt = (t) => {
   t = Math.max(0, Math.floor(t || 0));
@@ -10,9 +15,12 @@ const fmt = (t) => {
 };
 
 export class VideoBg {
-  constructor({ net, renderer, toast, canControl, audible }) {
+  // canPick: 이 기기에서 동영상 파일을 골라 재생할 수 있는지(학생 화면은 미리보기만)
+  constructor({ net, renderer, toast, canControl, audible, canPick = true }) {
     this.net = net; this.r = renderer; this.toast = toast || (() => {});
     this.canControl = canControl || (() => false);
+    this.canPick = canPick;
+    this.objUrl = null; this.meta = null; this.card = null;
     this.audible = audible || (() => true);
     this.page = null; this.el = null; this.key = null; this.src = null;
     this.play = null; this.offset = 0;          // offset: 서버 시계 − 이 기기 시계(ms)
@@ -35,7 +43,7 @@ export class VideoBg {
   onPage(page) {
     this.page = page;
     const m = page && page.bg_type === 'video' ? (page.bg_meta || {}) : null;
-    const key = m ? (m.src === 'yt' ? `yt:${m.yt}` : `file:${m.asset}`) : null;
+    const key = m ? (m.src === 'yt' ? `yt:${m.yt}` : m.src === 'local' ? `local:${localKey(m.name, m.size)}` : `file:${m.asset}`) : null;
     if (key !== this.key) { this._teardown(); if (key) this._create(m, page.bg_url); this.key = key; }
     this.bar.hidden = !key || !this.canControl();
     if (key) this.setPlay(page.play || null);
@@ -46,6 +54,9 @@ export class VideoBg {
       if (this.src === 'file') { try { this.el.pause(); this.el.removeAttribute('src'); this.el.load(); } catch { /* 무시 */ } }
       this.r.setUnder(null);
     }
+    if (this.objUrl) { URL.revokeObjectURL(this.objUrl); this.objUrl = null; }
+    this._hideCard();
+    this.meta = null;
     this.el = null; this.key = null; this.src = null; this.play = null; this.blocked = false; this.userMute = null;
     this._lastSound = undefined;
     this.yt = { t: 0, at: 0, dur: 0, state: -1, ready: false };
@@ -54,7 +65,9 @@ export class VideoBg {
 
   _create(m, url) {
     this.src = m.src;
+    this.meta = m;
     this.start = m.src === 'yt' ? (m.start || 0) : 0;
+    if (m.src === 'local') { this._local(m); return; }
     if (m.src === 'yt') {
       const f = document.createElement('iframe');
       f.className = 'videobg';
@@ -65,14 +78,87 @@ export class VideoBg {
       f.addEventListener('load', () => this._ytHello());
       this.el = f;
     } else {
-      const v = document.createElement('video');
-      v.className = 'videobg';
-      v.playsInline = true; v.preload = 'auto'; v.src = url;
-      v.addEventListener('loadedmetadata', () => this._apply());
-      v.addEventListener('error', () => this.toast('동영상을 재생할 수 없습니다. 이 기기에서 열 수 없는 형식일 수 있습니다(MP4·H.264 권장)', 5000));
-      this.el = v;
+      this.src = 'file';
+      this.el = this._videoEl(url);
     }
     this.r.setUnder(this.el);
+  }
+
+  _videoEl(url) {
+    const v = document.createElement('video');
+    v.className = 'videobg';
+    v.playsInline = true; v.preload = 'auto'; v.src = url;
+    v.addEventListener('loadedmetadata', () => this._apply());
+    v.addEventListener('error', () => this.toast('동영상을 재생할 수 없습니다. 이 기기에서 열 수 없는 형식일 수 있습니다(MP4·H.264 권장)', 5000));
+    return v;
+  }
+
+  // ── 이 기기의 동영상 파일 ──
+  // 파일을 찾는 동안·없을 때는 src = 'wait'(미리보기 그림). 찾으면 'file' 로 바꿔 보통 동영상처럼 재생
+  _local(m) {
+    this.src = 'wait';
+    const key = this.key = `local:${localKey(m.name, m.size)}`;
+    this._placeholder(m, null);
+    findLocal(localKey(m.name, m.size)).then((r) => {
+      if (this.key !== key || this.src !== 'wait') return;     // 그새 페이지가 바뀜
+      if (r && r.file) this._useFile(r.file);
+      else this._placeholder(m, r && r.needsPermission ? r.needsPermission : null);
+    });
+  }
+
+  // 칠판 아래에는 미리보기 그림, 칠판 위(누를 수 있는 곳)에는 안내 카드
+  _placeholder(m, handle) {
+    const el = document.createElement('div');
+    el.className = 'videobg video-local';
+    el.innerHTML = m.thumb ? `<img src="${esc(m.thumb)}" alt="">` : '';
+    this.el = el;
+    this.r.setUnder(el);
+    this._card(m, handle);
+    this._syncBar();
+  }
+
+  _card(m, handle) {
+    this._hideCard();
+    if (!this.canPick) return;                  // 학생 화면: 미리보기 그림만
+    const c = document.createElement('div');
+    c.className = 'video-local-card';
+    const sz = m.size >= 1e9 ? `${(m.size / 1e9).toFixed(1)}GB` : m.size >= 1e6 ? `${Math.round(m.size / 1e6)}MB` : `${Math.max(1, Math.round(m.size / 1e3))}KB`;
+    c.innerHTML = `<b>🎬 ${esc(m.name || '동영상')}</b> <small>${esc(sz)}${m.dur ? ` · ${fmt(m.dur)}` : ''}</small>
+      ${handle ? '<span>이 기기에 있는 파일입니다. 열려면 허락이 필요합니다</span><button type="button" class="ct-big" data-vl="grant">동영상 열기</button>'
+        : '<span>이 기기에는 이 동영상 파일이 없습니다. 파일이 있는 기기(전자칠판 등)에서 재생됩니다</span><button type="button" class="chip" data-vl="pick">이 기기에서 파일 고르기</button>'}`;
+    c.addEventListener('pointerdown', (e) => e.stopPropagation());
+    c.onclick = async (e) => {
+      const a = e.target.closest('[data-vl]')?.dataset.vl;
+      const key = localKey(m.name, m.size);
+      if (a === 'grant') {
+        const r = await grant(key, handle);
+        if (r && r.file) { if (this.meta === m) this._useFile(r.file); }
+        else { this.toast('파일을 열 수 없습니다. 옮겨졌거나 지워졌으면 다시 골라 주세요'); if (this.meta === m) this._card(m, null); }
+      } else if (a === 'pick') {
+        const r = await pickFile();
+        if (!r) return;
+        const same = localKey(r.file.name, r.file.size) === key;
+        if (!same && r.file.size !== m.size
+          && !(await askConfirm(`고른 파일(${r.file.name})이 칠판의 동영상(${m.name})과 크기가 다릅니다. 그래도 이 파일로 재생할까요?`, '이 파일로 재생'))) return;
+        await remember(r.file, r.handle);
+        if (!same) remember(r.file, null, key);          // 다른 파일로 대신: 이번 화면 동안만
+        if (this.meta === m) this._useFile(r.file);
+      }
+    };
+    document.body.appendChild(c);
+    this.card = c;
+  }
+
+  _hideCard() { if (this.card) { this.card.remove(); this.card = null; } }
+
+  _useFile(file) {
+    this._hideCard();
+    if (this.objUrl) URL.revokeObjectURL(this.objUrl);
+    this.objUrl = URL.createObjectURL(file);
+    this.src = 'file';
+    this.el = this._videoEl(this.objUrl);
+    this.r.setUnder(this.el);
+    this._apply(true);
   }
 
   // ── 유튜브: 외부 스크립트 없이 iframe 과 메시지로 조작(enablejsapi) ──
@@ -110,17 +196,21 @@ export class VideoBg {
   }
 
   // ── 지금 이 기기 상태 ──
-  _dur() { return this.src === 'file' ? (this.el && isFinite(this.el.duration) ? this.el.duration : 0) : this.yt.dur; }
+  _dur() {
+    if (this.src === 'wait') return (this.meta && this.meta.dur) || 0;
+    return this.src === 'file' ? (this.el && isFinite(this.el.duration) ? this.el.duration : 0) : this.yt.dur;
+  }
 
   _cur() {
     if (!this.el) return 0;
+    if (this.src === 'wait') return this.expected();
     if (this.src === 'file') return this.el.currentTime;
     const run = this.yt.state === 1 ? (performance.now() - this.yt.at) / 1000 : 0;
     return this.yt.t + run;
   }
 
   _isPlaying() {
-    if (!this.el) return false;
+    if (!this.el || this.src === 'wait') return false;
     return this.src === 'file' ? !this.el.paused && !this.el.ended : this.yt.state === 1 || this.yt.state === 3;
   }
 
@@ -146,6 +236,7 @@ export class VideoBg {
 
   // 서버 상태에 맞추기: 1초마다, 그리고 상태가 바뀔 때
   _apply(force = false) {
+    if (this.src === 'wait') { this._syncBar(); return; }   // 이 기기에 파일 없음: 조작 막대만 맞춤
     if (!this.el || (this.src === 'yt' && !this.yt.ready)) return;
     if (this.src === 'file' && this.el.readyState < 1) return;
     const want = this.expected(), cur = this._cur(), playing = !!(this.play && this.play.playing);
@@ -164,6 +255,7 @@ export class VideoBg {
   }
 
   _seek(t) {
+    if (this.src === 'wait') return;
     this._seekAt = performance.now();
     if (this.src === 'file') { try { this.el.currentTime = t; } catch { /* 무시 */ } }
     else {
@@ -175,6 +267,7 @@ export class VideoBg {
   }
 
   _doPlay() {
+    if (this.src === 'wait') return;
     this._playAt = performance.now();
     if (this.src === 'file') {
       const v = this.el;
@@ -199,12 +292,13 @@ export class VideoBg {
   }
 
   _doPause() {
+    if (this.src === 'wait') return;
     if (this.src === 'file') this.el.pause();
     else this._ytCmd('pauseVideo');
   }
 
   _sound() {
-    if (!this.el) return;
+    if (!this.el || this.src === 'wait') return;
     const on = this._wantSound() && !this.blocked;
     if (this.src === 'file') { if (this.el.muted === on) this.el.muted = !on; }
     else if (this._lastSound !== on) this._ytCmd(on ? 'unMute' : 'mute');

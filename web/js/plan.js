@@ -2,6 +2,7 @@
 import { api, getToken, needLogin, $, esc } from './auth.js';
 import { MediaTools, YT_EMBED, uploadFile } from './media.js';
 import { parsePlanXlsx, parseTtPdf } from './neis.js';
+import { isVideoFile, describe as describeVideo, remember as rememberVideo, pickFile, dropHandle } from './localvideo.js';
 
 const qs = new URLSearchParams(location.search);
 let grade = +qs.get('grade') || null, cls = +qs.get('class') || null;
@@ -160,9 +161,9 @@ async function loadMedia() {
   try {
     const j = await api(`/plan/media?${q()}&lkey=${le.lkey}`);
     box.innerHTML = j.items.length ? j.items.map((m, i) => `<div class="pd-item">
-      ${m.thumb ? `<img src="${m.thumb}" alt="">` : `<span class="pd-ico">${m.kind === 'yt' ? '▶' : m.kind === 'web' ? '🌐' : '📄'}</span>`}
-      <span class="pd-name">${esc(m.title || (m.kind === 'yt' ? `유튜브 ${m.yt}` : m.kind === 'web' ? m.url : m.kind === 'video' ? '동영상' : '자료'))}
-        <span class="muted small">${m.kind === 'pages' ? `${m.count}쪽` : m.kind === 'video' ? '동영상' : m.kind === 'yt' ? '유튜브' : '웹페이지'}</span></span>
+      ${m.thumb ? `<img src="${esc(m.thumb)}" alt="">` : `<span class="pd-ico">${m.kind === 'yt' || m.kind === 'local' ? '▶' : m.kind === 'web' ? '🌐' : '📄'}</span>`}
+      <span class="pd-name">${esc(m.title || (m.kind === 'yt' ? `유튜브 ${m.yt}` : m.kind === 'web' ? m.url : m.kind === 'local' ? (m.meta && m.meta.name) || '동영상' : m.kind === 'video' ? '동영상' : '자료'))}
+        <span class="muted small">${m.kind === 'pages' ? `${m.count}쪽` : m.kind === 'local' ? '동영상 파일 (이 기기)' : m.kind === 'video' ? '동영상' : m.kind === 'yt' ? '유튜브' : '웹페이지'}</span></span>
       <button type="button" class="chip" data-mv="${m.id}" data-dir="-1" ${i === 0 ? 'disabled' : ''} aria-label="위로">↑</button>
       <button type="button" class="chip" data-mv="${m.id}" data-dir="1" ${i === j.items.length - 1 ? 'disabled' : ''} aria-label="아래로">↓</button>
       <button type="button" class="chip" data-del="${m.id}">빼기</button></div>`).join('')
@@ -196,11 +197,33 @@ dlg.addEventListener('dragover', (e) => { if (cur && cur.lesson) e.preventDefaul
 dlg.addEventListener('drop', (e) => {
   if (!cur || !cur.lesson) return;
   e.preventDefault();
+  const hp = dropHandle(e);
   const f = e.dataTransfer.files[0];
-  if (f) uploadFor(f);
+  if (!f) return;
+  if (isVideoFile(f)) hp.then((h) => attachVideo(f, h && h.kind === 'file' ? h : null));
+  else uploadFor(f);
 });
 
+// 동영상 파일: 서버에는 이름·크기·길이·미리보기만. 이 기기는 파일 위치를 기억(크롬 PC)
+$('#pd-video').onclick = async () => {
+  const r = await pickFile();
+  if (r) attachVideo(r.file, r.handle);
+};
+async function attachVideo(file, handle) {
+  const prog = $('#pd-progress');
+  prog.textContent = '동영상을 여는 중…';
+  try {
+    const meta = await describeVideo(file);
+    if (!meta) throw new Error('이 기기에서 재생할 수 없는 동영상입니다(MP4·H.264 권장)');
+    await rememberVideo(file, handle);
+    await attach({ kind: 'local', meta, title: '' });
+    prog.textContent = '';
+    toast(`${file.name} 을(를) 이 차시에 붙였습니다`);
+  } catch (e) { prog.textContent = ''; fail(e); }
+}
+
 async function uploadFor(file) {
+  if (isVideoFile(file)) { await attachVideo(file, null); return; }
   const prog = $('#pd-progress');
   try {
     const res = await uploadFile(file, { token: await getToken(), onProgress: (p, t) => { prog.textContent = t; } });

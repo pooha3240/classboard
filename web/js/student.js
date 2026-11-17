@@ -1,4 +1,4 @@
-// 학생 화면: 선생님이 부를 때만 칠판에 풀기 (사진 보내기는 저장판)
+// 학생 화면: 선생님이 부를 때만 칠판에 풀기 (사진 보내기는 확장판)
 // classboard: 학생 계정 대신 학급 코드 + 번호로 들어옵니다(QR 로 들어오면 코드가 채워짐).
 import { Board } from './model.js';
 import { Renderer } from './render.js';
@@ -128,7 +128,7 @@ function ensureBoard() {
   board = new Board();
   renderer = new Renderer($('#stage'));
   renderer.board = board;
-  vbg = new VideoBg({ net, renderer, toast, canControl: () => false, audible: () => !!(grant && grant.home) });
+  vbg = new VideoBg({ net, renderer, toast, canControl: () => false, canPick: false, audible: () => !!(grant && grant.home) });
   tools = new Tools({ board, renderer, net, getPageId: () => board.page?.id, onChange: syncBar });
   tools.canEdit = (o) => mine.has(o.id);
   tools.tool = 'pen'; tools.sizeIdx = 1;

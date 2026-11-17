@@ -8,6 +8,7 @@
  */
 import type { MediaStore } from "./media";
 import { fileUrl } from "./media";
+import { localVideoMeta } from "./lib/validate";
 
 type Json = Record<string, unknown>;
 
@@ -537,6 +538,7 @@ export class PlanStore {
       const a = ids.length ? this.media.get(ids[0]) : null;
       out.thumb = a ? fileUrl(a, a.thumb_mime !== null) : null;
     } else if (r.kind === "yt") { out.yt = d.yt; out.start = d.start ?? 0; }
+    else if (r.kind === "local") { out.meta = d; out.thumb = d.thumb ?? null; }
     else out.url = d.url;
     return out;
   }
@@ -570,7 +572,10 @@ export class PlanStore {
       data = { yt, start: Math.max(0, Math.min(86400, Math.round(Number(b.start) || 0))) };
     } else if (kind === "web") {
       try { data = { url: cleanUrl(b.url) }; } catch { throw new PlanError(400, "bad_url", "주소를 확인하세요"); }
-    } else throw new PlanError(400, "bad_kind", "기본판에서는 사진·PDF·유튜브·웹 주소만 붙일 수 있습니다");
+    } else if (kind === "local") {
+      // 이 기기의 동영상 파일: 이름·크기·길이·미리보기만(파일은 수업할 기기에 있어야 함)
+      try { data = localVideoMeta((b.meta ?? {}) as Json); } catch { throw new PlanError(400, "bad_video", "동영상 파일을 확인하세요"); }
+    } else throw new PlanError(400, "bad_kind", "사진·PDF·동영상 파일·유튜브·웹 주소만 붙일 수 있습니다");
     const id = this.sql.exec<{ id: number }>("INSERT INTO plan_media (lkey, ord, kind, data, title, created_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
       lkey, n.o + 1, kind, JSON.stringify(data), str(b.title, 200), Date.now()).one().id;
     return { ok: true, id };
@@ -618,6 +623,8 @@ export class PlanStore {
           out.push({ bg_type: "web", bg_meta: { url: cleanUrl(d.url) }, w: 3200, h: 1800 });
         } else if (it.kind === "yt") {
           out.push({ bg_type: "video", bg_meta: { src: "yt", yt: d.yt, start: d.start ?? 0 }, w: 3200, h: 1800 });
+        } else if (it.kind === "local") {
+          out.push({ bg_type: "video", bg_meta: localVideoMeta(d), w: 3200, h: 1800 });
         }
       } catch { /* 깔 수 없는 자료는 건너뜀 */ }
     }

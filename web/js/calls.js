@@ -4,7 +4,7 @@
 import qrcode from '../vendor/qrcode.mjs';
 import { askConfirm } from './ui.js';
 
-// 판마다 다른 기능: 사진 받기는 저장판, 원격 참여는 서버판
+// 판마다 다른 기능: 사진 받기는 확장판, 원격 참여는 서버판
 const FEATURES = { photo: false, watch: false };
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

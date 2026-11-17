@@ -97,15 +97,16 @@ async function checkVersion() {
   let latest = '';
   try { latest = (await (await fetch('https://raw.githubusercontent.com/pooha3240/classboard/main/package.json', { cache: 'no-store' })).json()).version; } catch { /* 무시 */ }
   const newer = (a, b) => { const x = a.split('.').map(Number), y = b.split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
-  el.innerHTML = `${edition === 'storage' ? '저장판' : '기본판'} · 지금 판: <b>${esc(cur || '?')}</b>` + (latest ? ` · 최신 판: <b>${esc(latest)}</b> ${newer(latest, cur) ? '<span class="tag-new">업데이트 있음</span>' : '(최신)'}` : ' · 최신 판을 확인하지 못했습니다');
+  el.innerHTML = `${{ storage: '확장판', local: '로컬판' }[edition] || '기본판'} · 지금 판: <b>${esc(cur || '?')}</b>` + (latest ? ` · 최신 판: <b>${esc(latest)}</b> ${newer(latest, cur) ? '<span class="tag-new">업데이트 있음</span>' : '(최신)'}` : ' · 최신 판을 확인하지 못했습니다');
 }
 checkVersion();
 
-// ── 저장판: 저장 공간·백업·되살리기 ──
+// ── 확장판: 저장 공간·백업·되살리기 ──
 const mb = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)}GB` : n >= 1e6 ? `${Math.round(n / 1e6)}MB` : `${Math.max(1, Math.round(n / 1e3))}KB`);
 let edition = 'basic';
 async function loadStore(ed = edition) {
   edition = ed;
+  $('#rs-pwrow').style.display = edition === 'local' ? 'none' : '';     // 로컬판: 로그인이 없어 비밀번호 없이 되살림
   try {
     const j = await api('/history/sessions?start=9999-01-01');
     const s = j.storage, r2 = s.r2;
@@ -113,6 +114,8 @@ async function loadStore(ed = edition) {
       ? `칠판 저장소 ${mb(s.db)} / ${mb(s.budget)} · R2 ${mb(r2.media + r2.archive)} / ${mb(r2.cap)}
         <span class="muted">(자료 ${mb(r2.media)}, 보관한 판서 기록 ${mb(r2.archive)})</span>
         <br><span class="muted">R2 는 무료 10GB 를 넘지 않도록 8GB 에서 막습니다. 60일이 지난 판서 기록은 재생 기록까지 R2 로 옮겨 보관합니다.</span>`
+      : s.local ? `칠판 저장소 ${mb(s.db)} / ${mb(s.budget)} <span class="muted">(자료 ${mb(s.media)} 포함)</span>
+        <br><span class="muted">로컬판은 이 PC 에 저장합니다. 판서 재생 기록도 지우지 않습니다. PC 를 바꾸거나 기본판으로 옮길 때는 백업을 내려받아 새 칠판에서 되살리세요.</span>`
       : `칠판 저장소 ${mb(s.db)} / ${mb(s.budget)} <span class="muted">(자료 ${mb(s.media)} 포함)</span>
         <br><span class="muted">기본판은 판서 기록과 자료를 합쳐 950MB 까지 씁니다. 판서 재생 기록은 60일까지 남습니다. 오래 보관하려면 백업을 내려받아 두세요.</span>`;
   } catch (e) { $('#store-usage').textContent = e.message; }
@@ -170,7 +173,7 @@ $('#bk-go').onclick = async () => {
 $('#rs-go').onclick = async () => {
   const f = $('#rs-file').files[0], st = $('#rs-st'), pw = $('#rs-pw').value;
   if (!f) { toast('백업 파일을 고르세요'); return; }
-  if (!pw) { toast('교사 비밀번호를 넣으세요'); return; }
+  if (!pw && edition !== 'local') { toast('교사 비밀번호를 넣으세요'); return; }
   if (!confirm('지금 칠판의 판서 기록·진도표·자료가 모두 지워지고 백업 내용으로 바뀝니다. 계속할까요?')) return;
   const b = $('#rs-go'); b.disabled = true;
   try {

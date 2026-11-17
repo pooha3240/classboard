@@ -8,6 +8,8 @@
 #  6) 학급·교사 정보 넣기(웹의 '처음 설정'을 대신함)
 # 까지 혼자 진행합니다. 이미 설치한 PC 에서 다시 실행하면 업데이트 화면으로 열립니다.
 # 창을 열 수 없으면 종료 코드 1 로 끝나고, bat 이 글자판 도우미(install-windows.ps1)를 대신 엽니다.
+# 로컬판을 고르면 Cloudflare 없이 이 PC 에 설치합니다(Do-InstallLocal): 칠판 파일을 %LOCALAPPDATA%\classboard\local-app 에
+# 복사하고, 판서 기록은 local-data 에 두며, 바탕화면 'classboard 칠판' 바로가기로 엽니다(tools\local\classboard-local.ps1).
 
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
@@ -18,6 +20,11 @@ $Work = Join-Path $env:LOCALAPPDATA 'classboard'
 New-Item -ItemType Directory -Force -Path $Work | Out-Null
 $LogPath = Join-Path $Work 'install-log.txt'
 $InfoPath = Join-Path $Work 'install.json'
+$LocalCfgPath = Join-Path $Work 'local.json'          # 로컬판 설정(실행기가 읽음)
+$LocalApp = Join-Path $Work 'local-app'               # 로컬판 칠판 파일(업데이트하면 바뀜)
+$LocalData = Join-Path $Work 'local-data'             # 로컬판 판서 기록·자료·설정(업데이트해도 그대로)
+$LocalPort = 8790
+$LocalName = 'classboard 칠판'
 $WranglerJs = Join-Path $Root 'node_modules\wrangler\bin\wrangler.js'
 $env:WRANGLER_SEND_METRICS = 'false'
 $env:NO_COLOR = '1'
@@ -252,6 +259,8 @@ if ($Info -and $Info.edition) { $PrevEdition = [string]$Info.edition }
 elseif (Test-Path -LiteralPath (Join-Path $Work 'edition.txt')) { $PrevEdition = (Get-Content -LiteralPath (Join-Path $Work 'edition.txt') -Raw).Trim() }
 $script:Mode = 'install'
 if ($Info -and $Info.url) { $script:Mode = 'update' }
+$LocalInfo = $null
+if (Test-Path -LiteralPath $LocalCfgPath) { try { $LocalInfo = Get-Content -LiteralPath $LocalCfgPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { } }
 
 $F = New-Object Drawing.Font('Malgun Gothic', 10)
 $FB = New-Object Drawing.Font('Malgun Gothic', 10, [Drawing.FontStyle]::Bold)
@@ -304,11 +313,11 @@ function New-Num([int]$min, [int]$max, [int]$val) {
   return $n
 }
 function New-Flow {
-  $f = New-Object Windows.Forms.FlowLayoutPanel
-  $f.AutoSize = $true
-  $f.WrapContents = $false
-  $f.Margin = New-Object Windows.Forms.Padding(0)
-  return $f
+  $flow = New-Object Windows.Forms.FlowLayoutPanel
+  $flow.AutoSize = $true
+  $flow.WrapContents = $false
+  $flow.Margin = New-Object Windows.Forms.Padding(0)
+  return $flow
 }
 
 # ───────────── 창 ─────────────
@@ -414,15 +423,41 @@ $lblUpdate = New-Label '' $F $null $W
 [void](Add-Row 'update' '' $lblUpdate)
 
 $edFlow = New-Flow
+$rbLocal = New-Object Windows.Forms.RadioButton
+$rbLocal.Text = '로컬판'; $rbLocal.AutoSize = $true
+$rbLocal.Margin = New-Object Windows.Forms.Padding(3, 3, [int]($U * 1.2), 3)
 $rbBasic = New-Object Windows.Forms.RadioButton
 $rbBasic.Text = '기본판'; $rbBasic.AutoSize = $true
 $rbStorage = New-Object Windows.Forms.RadioButton
-$rbStorage.Text = '저장판'; $rbStorage.AutoSize = $true
+$rbStorage.Text = '확장판'; $rbStorage.AutoSize = $true
 $rbStorage.Margin = New-Object Windows.Forms.Padding([int]($U * 1.2), 3, 3, 3)
+$lnkCompare = New-Object Windows.Forms.LinkLabel
+$lnkCompare.Text = '판 비교 보기'
+$lnkCompare.AutoSize = $true
+$lnkCompare.Font = $FB
+$lnkCompare.Margin = New-Object Windows.Forms.Padding([int]($U * 1.6), 4, 3, 3)
+$lnkCompare.Add_LinkClicked({ Show-EditionCompare })
+$edFlow.Controls.Add($rbLocal)
 $edFlow.Controls.Add($rbBasic)
 $edFlow.Controls.Add($rbStorage)
-if ($PrevEdition -eq 'storage') { $rbStorage.Checked = $true } else { $rbBasic.Checked = $true }
-[void](Add-Row 'edition' '판' $edFlow '기본판: 카드 등록 없이 무료(자료 700MB, 판서 재생 60일). 저장판: R2 사용(자료 6GB, 판서 기록 계속 보관). 저장판은 Cloudflare 에 카드(또는 PayPal)를 등록하고 R2 를 먼저 켜야 합니다.')
+$edFlow.Controls.Add($lnkCompare)
+if ($PrevEdition -eq 'storage') { $rbStorage.Checked = $true }
+elseif ($LocalInfo -and -not $Info) { $rbLocal.Checked = $true }
+else { $rbBasic.Checked = $true }
+$items = Add-Row 'edition' '판' $edFlow ''
+$lblEdHelp = New-Label '' $FS $cGray ([int]($U * 24))
+$lblEdHelp.Margin = New-Object Windows.Forms.Padding(3, 0, 3, [int]($U * 0.45))
+$edRow = $pgForm.RowCount; $pgForm.RowCount = $edRow + 1
+[void]$pgForm.RowStyles.Add((New-Object Windows.Forms.RowStyle([Windows.Forms.SizeType]::AutoSize)))
+$pgForm.Controls.Add($lblEdHelp, 1, $edRow)
+$script:Rows['edition'] += $lblEdHelp
+function Ed-Help {
+  if ($rbLocal.Checked) { $lblEdHelp.Text = '로컬판: 가입 없이 이 PC 한 대에 설치합니다. 이 PC(와 연결된 전자칠판 화면)에서만 쓰고, 학생 호출·다른 기기 연결은 없습니다. 저장 공간은 PC 디스크(20GB 까지).' }
+  elseif ($rbStorage.Checked) { $lblEdHelp.Text = '확장판: R2 사용(자료 6GB, 판서 기록 계속 보관). Cloudflare 에 카드(또는 PayPal)를 등록하고 R2 를 먼저 켜야 합니다.' }
+  else { $lblEdHelp.Text = '기본판: 카드 등록 없이 무료(자료 700MB, 판서 재생 60일). 교사 PC·전자칠판·학생 태블릿이 같은 주소로 들어옵니다.' }
+}
+Ed-Help
+foreach ($rb in @($rbLocal, $rbBasic, $rbStorage)) { $rb.Add_CheckedChanged({ if ($this.Checked) { Ed-Help; if ($script:State -eq 'form') { Apply-Mode } } }) }
 
 $tbSub = New-Text ([int]($U * 13)) -Ascii
 $tbSub.CharacterCasing = 'Lower'
@@ -464,6 +499,22 @@ $chkRelogin.AutoSize = $true
 $chkRelogin.Font = $FS
 $chkRelogin.Margin = New-Object Windows.Forms.Padding(3, [int]($U * 0.5), 3, 0)
 [void](Add-Row 'relogin' '' $chkRelogin)
+
+$chkAutoStart = New-Object Windows.Forms.CheckBox
+$chkAutoStart.Text = 'Windows 를 켤 때 칠판을 미리 켜 두기(바로가기를 누르면 바로 열림)'
+$chkAutoStart.AutoSize = $true
+$chkAutoStart.Checked = $true
+$chkAutoStart.Margin = New-Object Windows.Forms.Padding(3, [int]($U * 0.5), 3, 0)
+if ($LocalInfo -and $null -ne $LocalInfo.autostart) { $chkAutoStart.Checked = [bool]$LocalInfo.autostart }
+[void](Add-Row 'autostart' '' $chkAutoStart)
+
+$chkMigrate = New-Object Windows.Forms.CheckBox
+$chkMigrate.Text = '이 PC 의 로컬판 판서 기록·진도표·자료를 새 칠판으로 옮기기'
+$chkMigrate.AutoSize = $true
+$chkMigrate.Checked = $true
+$chkMigrate.Font = $FB
+$chkMigrate.Margin = New-Object Windows.Forms.Padding(3, [int]($U * 0.5), 3, 0)
+[void](Add-Row 'migrate' '' $chkMigrate '설치가 끝나면 로컬판 백업을 받아 새 칠판에 되살립니다(백업 파일도 이 PC 에 남김). 다 옮긴 뒤 로컬판을 지울지 묻습니다.')
 
 $lnkMode = New-Object Windows.Forms.LinkLabel
 $lnkMode.AutoSize = $true
@@ -601,8 +652,15 @@ function Show-Page([string]$name) {
 }
 
 function Apply-Mode {
-  $upd = ($script:Mode -eq 'update')
   $lblTitle.Text = 'classboard 전자칠판 설치'
+  if ($rbLocal.Checked) { Apply-ModeLocal; return }
+  Show-Row 'autostart' $false
+  Show-Row 'migrate' ([bool]$LocalInfo -and $script:Mode -ne 'update')
+  Show-Row 'relogin' $true
+  Show-Row 'modelink' $true
+  $lnkRemove.Text = '칠판 지우기(Cloudflare 와 이 PC 에서 삭제)'
+  Show-Row 'remove' $true
+  $upd = ($script:Mode -eq 'update')
   foreach ($k in @('sub', 'class', 'name', 'id', 'pw', 'pw2')) { Show-Row $k (-not $upd) }
   Show-Row 'update' $upd
   if ($upd) {
@@ -614,6 +672,25 @@ function Apply-Mode {
   } else {
     $lblSub.Text = '정보를 넣고 [설치 시작]을 누르면 끝까지 혼자 진행합니다. (판 ' + $AppVersion + ')'
     $lnkMode.Text = '이미 설치한 칠판이면 여기를 눌러 업데이트하기'
+    $btnMain.Text = '설치 시작'
+  }
+}
+
+function Apply-ModeLocal {
+  $installed = [bool]$LocalInfo
+  foreach ($k in @('sub', 'id', 'pw', 'pw2', 'relogin', 'modelink')) { Show-Row $k $false }
+  foreach ($k in @('class', 'name')) { Show-Row $k (-not $installed) }
+  Show-Row 'autostart' $true
+  Show-Row 'migrate' $false
+  Show-Row 'update' $installed
+  $lnkRemove.Text = '로컬판 지우기(이 PC 의 칠판과 판서 기록 삭제)'
+  Show-Row 'remove' $installed
+  if ($installed) {
+    $lblSub.Text = '로컬판을 새 버전으로 업데이트합니다. 판서·자료·설정은 그대로입니다.'
+    $lblUpdate.Text = "이 PC 에 설치한 로컬판을 새 파일로 바꿉니다. 판서 기록은 그대로입니다.`n(지금 판: $([string]$LocalInfo.version))"
+    $btnMain.Text = '업데이트'
+  } else {
+    $lblSub.Text = '학급과 이름만 넣고 [설치 시작]을 누르세요. Cloudflare 가입이 필요 없습니다. (판 ' + $AppVersion + ')'
     $btnMain.Text = '설치 시작'
   }
 }
@@ -636,6 +713,91 @@ function Set-Buttons([string]$state) {
 
 # ───────────── 작은 대화 상자 ─────────────
 
+# 판 비교: 네 판을 한눈에. 로컬판·기본판·확장판은 여기서 바로 고름(서버판은 곧 릴리스)
+function Show-EditionCompare {
+  $d = New-Object Windows.Forms.Form
+  $d.Text = '판 비교 - 어느 판을 설치할까요?'; $d.Font = $F
+  $d.FormBorderStyle = 'FixedDialog'; $d.MaximizeBox = $false; $d.MinimizeBox = $false
+  $d.StartPosition = 'CenterParent'
+  $d.AutoSize = $true; $d.AutoSizeMode = 'GrowAndShrink'
+  $d.Padding = New-Object Windows.Forms.Padding($U)
+
+  $cols = @('로컬판', '기본판', '확장판', '서버판')
+  $rows = @(
+    @('설치 위치',            '교사 PC 한 대',        'Cloudflare 무료 계정', 'Cloudflare 무료 계정 + R2', '학교·개인 서버(Docker)'),
+    @('가입·카드',            '필요 없음',            'Cloudflare 가입 (카드 없음)', '가입 + 카드 또는 PayPal 등록 (무료 10GB 안에서는 청구 없음)', '필요 없음'),
+    @('학생 호출(칠판에 풀기)', '안 됨',               '됨',                   '됨',                         '됨'),
+    @('교사 태블릿·전자칠판 함께 쓰기', '안 됨 (기기 하나)', '됨',             '됨',                         '됨'),
+    @('집에서 판서 기록 보기',  '안 됨',               '됨',                   '됨',                         '됨'),
+    @('사진·PDF 자료',         'PC 디스크만큼',        '700MB',                '6GB',                        '서버 디스크만큼'),
+    @('차시에 붙이는 자료',     'PC 디스크만큼',        '300MB',                '2GB',                        '서버 디스크만큼'),
+    @('판서 재생 기록',         '계속 보관',            '60일 (그 뒤 완성된 판서만)', '계속 보관',            '계속 보관'),
+    @('동영상 파일',            '이 기기에서 재생',      '이 기기에서 재생',      '이 기기에서 재생',            '서버에 올려 모든 기기에서'),
+    @('합반·원격 수업',         '안 됨',               '안 됨',                '안 됨',                      '됨'),
+    @('백업 내려받기·되살리기', '됨',                  '됨',                   '됨',                         '됨'),
+    @('이런 분께',              '가입 없이 판서·진도 도구만 쓸 분', '대부분의 선생님', '판서 기록을 오래 쌓거나 자료를 많이 둘 분', '서버를 운영하는 분'),
+    @('상태',                   '설치 가능 (시험판)',   '설치 가능',            '설치 가능',                  '곧 릴리스')
+  )
+
+  $flow = New-Object Windows.Forms.FlowLayoutPanel
+  $flow.FlowDirection = 'TopDown'; $flow.AutoSize = $true; $flow.WrapContents = $false
+  $flow.Controls.Add((New-Label '판마다 할 수 있는 일과 필요한 것이 다릅니다. 나중에 판을 바꿔도 판서·설정은 백업으로 옮길 수 있습니다.' $F $null ([int]($U * 40))))
+
+  $t = New-Object Windows.Forms.TableLayoutPanel
+  $t.AutoSize = $true
+  $t.CellBorderStyle = 'Single'
+  $t.BackColor = [Drawing.Color]::White
+  $t.ColumnCount = 5
+  $t.RowCount = $rows.Count + 1
+  $t.Margin = New-Object Windows.Forms.Padding(3, [int]($U * 0.5), 3, [int]($U * 0.5))
+  for ($c = 0; $c -lt 5; $c++) { [void]$t.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle([Windows.Forms.SizeType]::AutoSize))) }
+  $cellW = [int]($U * 8.2)
+  $cellLabel = {
+    param([string]$text, $font, $color, $back)
+    $l = New-Label $text $font $color $cellW
+    $l.Margin = New-Object Windows.Forms.Padding([int]($U * 0.3), [int]($U * 0.15), [int]($U * 0.3), [int]($U * 0.15))
+    if ($back) { $l.BackColor = $back }
+    return $l
+  }
+  $cHead = [Drawing.Color]::FromArgb(232, 240, 254)
+  $t.Controls.Add((& $cellLabel '' $FB $null $null), 0, 0)
+  for ($c = 0; $c -lt 4; $c++) {
+    $name = $cols[$c]
+    $color = if ($c -le 2) { $cBlue } else { $cGray }
+    $t.Controls.Add((& $cellLabel $name $FBig $color $null), $c + 1, 0)
+  }
+  for ($r = 0; $r -lt $rows.Count; $r++) {
+    $row = $rows[$r]
+    $t.Controls.Add((& $cellLabel $row[0] $FB $null $null), 0, $r + 1)
+    for ($c = 1; $c -le 4; $c++) {
+      $v = $row[$c]
+      $color = $null
+      if ($v -like '안 됨*') { $color = $cGray }
+      elseif ($v -eq '됨' -or $v -like '설치 가능*') { $color = $cGreen }
+      $back = if ($c -eq 2 -or $c -eq 3) { $cHead } else { $null }
+      $t.Controls.Add((& $cellLabel $v $FS $color $back), $c, $r + 1)
+    }
+  }
+  $flow.Controls.Add($t)
+  $flow.Controls.Add((New-Label '이 설치 창은 로컬판·기본판·확장판을 설치합니다. 확장판은 Cloudflare 대시보드 → R2 Object Storage 에서 R2 를 먼저 켜야 합니다. 로컬판으로 시작했다가 기본판·확장판을 설치하면 설치 창이 로컬판 기록을 옮겨 줍니다.' $FS $cGray ([int]($U * 40))))
+
+  $bf = New-Flow
+  $bLocal = New-Button '로컬판으로 설치'; $bLocal.DialogResult = 'OK'
+  $bBasic = New-Button '기본판으로 설치'; $bBasic.DialogResult = 'Yes'
+  $bStorage = New-Button '확장판으로 설치'; $bStorage.DialogResult = 'No'
+  $bClose = New-Button '닫기'; $bClose.DialogResult = 'Cancel'
+  $bBasic.Font = $FB
+  $bf.Controls.Add($bLocal); $bf.Controls.Add($bBasic); $bf.Controls.Add($bStorage); $bf.Controls.Add($bClose)
+  $flow.Controls.Add($bf)
+  $d.Controls.Add($flow)
+  $d.CancelButton = $bClose
+  $r = $d.ShowDialog($form)
+  $d.Dispose()
+  if ($r -eq 'OK') { $rbLocal.Checked = $true }
+  elseif ($r -eq 'Yes') { $rbBasic.Checked = $true }
+  elseif ($r -eq 'No') { $rbStorage.Checked = $true }
+}
+
 function Ask-Text([string]$title, [string]$message, [string]$initial = '') {
   $d = New-Object Windows.Forms.Form
   $d.Text = $title; $d.Font = $F
@@ -643,19 +805,19 @@ function Ask-Text([string]$title, [string]$message, [string]$initial = '') {
   $d.StartPosition = 'CenterParent'
   $d.AutoSize = $true; $d.AutoSizeMode = 'GrowAndShrink'
   $d.Padding = New-Object Windows.Forms.Padding($U)
-  $f = New-Object Windows.Forms.FlowLayoutPanel
-  $f.FlowDirection = 'TopDown'; $f.AutoSize = $true; $f.WrapContents = $false
-  $f.Controls.Add((New-Label $message $F $null ([int]($U * 22))))
+  $flow = New-Object Windows.Forms.FlowLayoutPanel
+  $flow.FlowDirection = 'TopDown'; $flow.AutoSize = $true; $flow.WrapContents = $false
+  $flow.Controls.Add((New-Label $message $F $null ([int]($U * 22))))
   $t = New-Text ([int]($U * 14)) -Ascii
   $t.CharacterCasing = 'Lower'
   $t.Text = $initial
-  $f.Controls.Add($t)
+  $flow.Controls.Add($t)
   $bf = New-Flow
   $ok = New-Button '확인'; $ok.DialogResult = 'OK'
   $no = New-Button '멈추기'; $no.DialogResult = 'Cancel'
   $bf.Controls.Add($ok); $bf.Controls.Add($no)
-  $f.Controls.Add($bf)
-  $d.Controls.Add($f)
+  $flow.Controls.Add($bf)
+  $d.Controls.Add($flow)
   $d.AcceptButton = $ok; $d.CancelButton = $no
   $r = $d.ShowDialog($form)
   $v = $t.Text.Trim().ToLower()
@@ -671,21 +833,21 @@ function Choose-Item([string]$title, [string]$message, [string[]]$names) {
   $d.StartPosition = 'CenterParent'
   $d.AutoSize = $true; $d.AutoSizeMode = 'GrowAndShrink'
   $d.Padding = New-Object Windows.Forms.Padding($U)
-  $f = New-Object Windows.Forms.FlowLayoutPanel
-  $f.FlowDirection = 'TopDown'; $f.AutoSize = $true; $f.WrapContents = $false
-  $f.Controls.Add((New-Label $message $F $null ([int]($U * 22))))
+  $flow = New-Object Windows.Forms.FlowLayoutPanel
+  $flow.FlowDirection = 'TopDown'; $flow.AutoSize = $true; $flow.WrapContents = $false
+  $flow.Controls.Add((New-Label $message $F $null ([int]($U * 22))))
   $lb = New-Object Windows.Forms.ListBox
   $lb.Width = [int]($U * 22)
   $lb.Height = [int]($U * 1.3 * [Math]::Min(8, [Math]::Max(3, $names.Count))) + 6
   foreach ($n in $names) { [void]$lb.Items.Add($n) }
   $lb.SelectedIndex = 0
-  $f.Controls.Add($lb)
+  $flow.Controls.Add($lb)
   $bf = New-Flow
   $ok = New-Button '확인'; $ok.DialogResult = 'OK'
   $no = New-Button '멈추기'; $no.DialogResult = 'Cancel'
   $bf.Controls.Add($ok); $bf.Controls.Add($no)
-  $f.Controls.Add($bf)
-  $d.Controls.Add($f)
+  $flow.Controls.Add($bf)
+  $d.Controls.Add($flow)
   $d.AcceptButton = $ok; $d.CancelButton = $no
   $lb.Add_DoubleClick({ $this.FindForm().DialogResult = 'OK' })
   $r = $d.ShowDialog($form)
@@ -812,12 +974,12 @@ function Ensure-Account {
   Select-Account
   $acct = $script:Account
 
-  # 저장판: R2 가 켜져 있는지 먼저 확인
+  # 확장판: R2 가 켜져 있는지 먼저 확인
   if ($script:Edition -eq 'storage') {
     $r2off = $false
     try { [void](Cf GET "/accounts/$($acct.id)/r2/buckets?per_page=1") } catch { if ("$_" -match '10042|enable R2') { $r2off = $true } }
     if ($r2off) {
-      $a = Msg "이 계정은 아직 R2 가 켜져 있지 않습니다. 저장판은 R2 를 먼저 켜야 합니다.`n(카드 또는 PayPal 등록, 무료 10GB 안에서는 청구 없음)`n`n지금 Cloudflare 의 R2 화면을 열까요? R2 를 켠 뒤 이 창에서 [다시 시도]를 누르세요." 'YesNo' 'Warning'
+      $a = Msg "이 계정은 아직 R2 가 켜져 있지 않습니다. 확장판은 R2 를 먼저 켜야 합니다.`n(카드 또는 PayPal 등록, 무료 10GB 안에서는 청구 없음)`n`n지금 Cloudflare 의 R2 화면을 열까요? R2 를 켠 뒤 이 창에서 [다시 시도]를 누르세요." 'YesNo' 'Warning'
       if ($a -eq 'Yes') { Start-Process "https://dash.cloudflare.com/$($acct.id)/r2/overview" }
       throw 'R2 를 켠 뒤 [다시 시도]를 누르세요. 카드 등록 없이 쓰려면 [이전]에서 기본판을 고르세요.'
     }
@@ -1002,7 +1164,14 @@ function Do-Install {
   $upd = ($script:Mode -eq 'update')
   $last = '학급·교사 정보 넣기'
   if ($upd) { $last = '새 버전 확인' }
-  Init-Steps @('설치 도구 준비', 'Cloudflare 로그인', '계정과 칠판 주소', '칠판 올리기', '설치 키와 주소 열림 확인', $last)
+  $script:WantMigrate = ([bool]$LocalInfo -and -not $upd -and $chkMigrate.Checked)
+  $script:Migrated = $null
+  $script:MigrateFile = $null
+  $script:MigrateError = $null
+  $script:LocalRemoved = $false
+  $steps = @('설치 도구 준비', 'Cloudflare 로그인', '계정과 칠판 주소', '칠판 올리기', '설치 키와 주소 열림 확인', $last)
+  if ($script:WantMigrate) { $steps += '로컬판 기록 옮기기' }
+  Init-Steps $steps
   Show-Page 'run'
   Set-Buttons 'running'
   $bar.Visible = $true
@@ -1069,6 +1238,27 @@ function Do-Install {
     }
     Save-Info
     $script:Health = $health
+    if ($script:WantMigrate) {
+      $cur = 6; Set-Step 6 'run'
+      if (-not $script:SetupDone) {
+        Log '새로 처음 설정한 칠판이 아니라서(이미 쓰던 칠판이거나 주소가 아직 안 열림) 로컬판 기록은 옮기지 않았습니다.'
+        $script:MigrateError = '새 칠판이 아직 열리지 않았거나 이미 쓰던 칠판이라 옮기지 않았습니다.'
+        Set-Step 6 'skip'
+      } else {
+        try {
+          Migrate-Local
+          Set-Step 6 'ok'
+          $a = Msg "로컬판 기록을 새 칠판으로 옮겼습니다($($script:Migrated.rows)줄, 자료 $($script:Migrated.blobs)장).`n`n이제 이 PC 의 로컬판을 지울까요?`n(바로가기·칠판 파일·판서 기록을 지웁니다. 옮기기 전에 받은 백업 파일은 남깁니다.)" 'YesNo' 'Question'
+          if ($a -eq 'Yes') { Set-Status '로컬판을 지우는 중…'; Remove-LocalAll; $script:LocalRemoved = $true }
+        } catch {
+          if ("$_" -eq 'CANCELLED') { throw }
+          $script:MigrateError = "$($_.Exception.Message)"
+          if (-not $script:MigrateError) { $script:MigrateError = "$_" }
+          Log "로컬판 기록 옮기기 실패: $($script:MigrateError)"
+          Set-Step 6 'fail'
+        }
+      }
+    }
     Show-Done
   } catch {
     $msg = "$($_.Exception.Message)"
@@ -1084,6 +1274,351 @@ function Do-Install {
     $lblSub.Text = '문제를 해결한 뒤 [다시 시도]를 누르세요. 기록 파일을 보내 주시면 원인을 찾는 데 도움이 됩니다.'
     $bar.Visible = $false
     $lnkLogin.Visible = $false
+    Set-Buttons 'error'
+  } finally {
+    $script:Running = $false
+    $script:Proc = $null
+  }
+  if ($script:CloseAfter) { $form.Close() }
+}
+
+
+# ───────────── 로컬판 (Cloudflare 없이 이 PC 에) ─────────────
+
+function Open-Board {
+  if ($script:Edition -eq 'local') {
+    $vbs = Join-Path $LocalApp 'tools\local\classboard-local.vbs'
+    Start-Process (Join-Path $env:WINDIR 'System32\wscript.exe') -ArgumentList ('"' + $vbs + '"')
+  } else { Start-Process "$($script:Url)/login" }
+}
+
+function Stop-Local {
+  $procs = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -and $_.CommandLine -like '*wrangler.local.jsonc*' })
+  foreach ($p in $procs) { try { [void](Run-Proc 'taskkill.exe' @('/T', '/F', '/PID', [string]$p.ProcessId) -Quiet) } catch { if ("$_" -eq 'CANCELLED') { throw } } }
+  if ($procs.Count -gt 0) { Log "켜져 있던 로컬판 칠판을 껐습니다($($procs.Count))."; Wait-Ms 800 }
+}
+
+function Copy-LocalApp {
+  New-Item -ItemType Directory -Force -Path $LocalApp | Out-Null
+  foreach ($d in @('src', 'web', 'tools')) {
+    Remove-Dir (Join-Path $LocalApp $d)
+  }
+  foreach ($d in @('src', 'web')) { Copy-Item -LiteralPath (Join-Path $Root $d) -Destination (Join-Path $LocalApp $d) -Recurse -Force -ErrorAction Stop }
+  New-Item -ItemType Directory -Force -Path (Join-Path $LocalApp 'tools') | Out-Null
+  Copy-Item -LiteralPath (Join-Path $Root 'tools\local') -Destination (Join-Path $LocalApp 'tools\local') -Recurse -Force -ErrorAction Stop
+  foreach ($fileName in @('package.json', 'package-lock.json', 'tsconfig.json', 'wrangler.local.jsonc', 'LICENSE')) {
+    $src = Join-Path $Root $fileName
+    if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination (Join-Path $LocalApp $fileName) -Force -ErrorAction Stop }
+  }
+  if (-not (Test-Path -LiteralPath (Join-Path $LocalApp 'tools\local\classboard-local.ps1'))) { throw '칠판 파일을 복사하지 못했습니다. 압축을 끝까지 풀었는지 확인하세요.' }
+}
+
+function Ensure-LocalModules {
+  $lock = Join-Path $LocalApp 'package-lock.json'
+  $marker = Join-Path $LocalApp 'node_modules\.classboard-lock'
+  $wr = Join-Path $LocalApp 'node_modules\wrangler\bin\wrangler.js'
+  $hash = ''
+  try { $hash = (Get-FileHash -LiteralPath $lock -Algorithm SHA256).Hash } catch { }
+  if ($hash -and (Test-Path -LiteralPath $wr) -and (Test-Path -LiteralPath $marker) -and ((Get-Content -LiteralPath $marker -Raw).Trim() -eq $hash)) {
+    Log '칠판 프로그램이 이미 준비되어 있습니다.'
+    return
+  }
+  Set-Status '칠판 프로그램을 받는 중입니다(처음 한 번, 1~3분)…'
+  $r = Run-Proc $script:NodeExe @($script:NpmCli, 'ci', '--prefix', $LocalApp, '--no-audit', '--no-fund', '--loglevel=error')
+  if ($r.Code -ne 0 -or -not (Test-Path -LiteralPath $wr)) { throw '칠판 프로그램을 받지 못했습니다. 인터넷 연결(학교망이면 보안 프로그램)을 확인하고 다시 시도하세요.' }
+  if ($hash) { Set-Content -LiteralPath $marker -Value $hash -Encoding ASCII }
+}
+
+function Save-LocalCfg {
+  $o = [ordered]@{
+    edition = 'local'
+    node = $script:NodeExe
+    app = $LocalApp
+    data = $LocalData
+    port = $LocalPort
+    autostart = [bool]$chkAutoStart.Checked
+    version = $AppVersion
+    updated = (Get-Date -Format 'yyyy-MM-dd HH:mm')
+  }
+  ($o | ConvertTo-Json) | Set-Content -LiteralPath $LocalCfgPath -Encoding UTF8
+}
+
+function Local-Shortcuts { return @(
+  (Join-Path ([Environment]::GetFolderPath('Desktop')) "$LocalName.lnk"),
+  (Join-Path ([Environment]::GetFolderPath('Programs')) "$LocalName.lnk"),
+  (Join-Path ([Environment]::GetFolderPath('Startup')) "$LocalName 서버.lnk")
+) }
+
+function Make-LocalShortcuts {
+  $vbs = Join-Path $LocalApp 'tools\local\classboard-local.vbs'
+  $wscript = Join-Path $env:WINDIR 'System32\wscript.exe'
+  $ico = Join-Path $LocalApp 'classboard.ico'
+  $icon = "$env:WINDIR\System32\shell32.dll,13"
+  try {
+    # PNG 를 그대로 담은 .ico (Windows Vista 이후 지원): 머리 6바이트 + 항목 16바이트 + PNG
+    $png = [IO.File]::ReadAllBytes((Join-Path $LocalApp 'web\helper\ext\icon128.png'))
+    $icoStream = [IO.File]::Create($ico)
+    $bw = New-Object IO.BinaryWriter($icoStream)
+    $bw.Write([UInt16]0); $bw.Write([UInt16]1); $bw.Write([UInt16]1)
+    $bw.Write([byte]128); $bw.Write([byte]128); $bw.Write([byte]0); $bw.Write([byte]0)
+    $bw.Write([UInt16]1); $bw.Write([UInt16]32); $bw.Write([UInt32]$png.Length); $bw.Write([UInt32]22)
+    $bw.Write($png)
+    $bw.Close()
+    $icon = "$ico,0"
+  } catch { Log "아이콘을 만들지 못했습니다(기본 아이콘 사용): $_" }
+  $sh = New-Object -ComObject WScript.Shell
+  $paths = Local-Shortcuts
+  foreach ($i in 0..2) {
+    $path = $paths[$i]
+    if ($i -eq 2 -and -not $chkAutoStart.Checked) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue; continue }
+    $lnk = $sh.CreateShortcut($path)
+    $lnk.TargetPath = $wscript
+    $lnk.Arguments = '"' + $vbs + '"' + $(if ($i -eq 2) { ' server' } else { '' })
+    $lnk.WorkingDirectory = $LocalApp
+    $lnk.IconLocation = $icon
+    $lnk.Description = $(if ($i -eq 2) { 'classboard 로컬판 칠판을 미리 켜 둡니다' } else { 'classboard 로컬판 전자칠판 열기' })
+    $lnk.Save()
+  }
+  Log "바로가기: $($paths[0])"
+}
+
+function Start-LocalServer {
+  $ps1 = Join-Path $LocalApp 'tools\local\classboard-local.ps1'
+  Start-Process 'powershell.exe' -WindowStyle Hidden -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', ('"' + $ps1 + '"'), '-Server')
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  while ($sw.Elapsed.TotalSeconds -lt 150) {
+    try {
+      $h = (Fetch-Text "$($script:Url)/api/health" 4) | ConvertFrom-Json
+      if ($h.edition -eq 'local') { return $h }
+    } catch { if ("$_" -eq 'CANCELLED') { throw } }
+    Wait-Ms 1500
+  }
+  $tail = ''
+  try { $tail = (Get-Content -LiteralPath (Join-Path $Work 'local-server.log') -Tail 15 -Encoding UTF8) -join "`n" } catch { }
+  Log $tail
+  throw '칠판을 켜지 못했습니다. [자세히 보기]의 기록을 확인하고 [다시 시도]를 누르세요.'
+}
+
+function Do-InstallLocal {
+  $script:Action = 'install-local'
+  $script:Running = $true
+  $script:Cancel = $false
+  $script:Edition = 'local'
+  $script:Url = "http://127.0.0.1:$LocalPort"
+  $script:SetupDone = $false
+  $script:AlreadyConfigured = $false
+  $script:ServerVersion = ''
+  $upd = [bool]$LocalInfo
+  Init-Steps @('설치 도구 준비', '칠판 파일 복사', '칠판 프로그램 받기', '바로가기 만들기', '칠판 켜기와 처음 설정')
+  Show-Page 'run'
+  Set-Buttons 'running'
+  $bar.Visible = $true
+  $bar.Style = 'Marquee'
+  $lblSub.Text = '창을 닫지 말고 기다려 주세요. 손이 갈 일은 없습니다.'
+  Log "── 시작: 로컬판 $(if ($upd) { '업데이트' } else { '새로 설치' })"
+  $cur = 0
+  try {
+    Set-Step 0 'run'; Set-Status '설치 도구를 준비하는 중입니다…'
+    Ensure-Node
+    Set-Step 0 'ok'
+
+    $cur = 1; Set-Step 1 'run'; Set-Status '칠판 파일을 이 PC 에 복사하는 중…'
+    Stop-Local
+    Copy-LocalApp
+    Set-Step 1 'ok'
+
+    $cur = 2; Set-Step 2 'run'
+    Ensure-LocalModules
+    Set-Step 2 'ok'
+
+    $cur = 3; Set-Step 3 'run'; Set-Status '바로가기를 만드는 중…'
+    Save-LocalCfg
+    Make-LocalShortcuts
+    Set-Step 3 'ok'
+
+    $cur = 4; Set-Step 4 'run'; Set-Status '칠판을 켜는 중입니다(처음엔 10~30초)…'
+    $h = Start-LocalServer
+    $script:ServerVersion = [string]$h.version
+    $st = Get-SetupStatus
+    if ($st -and $st.configured) {
+      $script:AlreadyConfigured = $true
+      Log '이미 처음 설정이 된 칠판이라 학급 정보는 바꾸지 않았습니다.'
+    } else {
+      Set-Status '학급 정보를 넣는 중…'
+      $body = @{ grade = [int]$numGrade.Value; class = [int]$numClass.Value; size = [int]$numSize.Value; name = $tbName.Text.Trim() }
+      try { [void](Post-Json "$($script:Url)/eboard-api/setup" $body 30); $script:SetupDone = $true }
+      catch {
+        if ("$_" -eq 'CANCELLED') { throw }
+        $e = Web-Error $_.Exception
+        Log "  처음 설정 응답: $($e.Status) $($e.Code) $($e.Message)"
+        if ($e.Code -ne 'configured') { throw "학급 정보를 넣지 못했습니다: $($e.Message)" }
+      }
+    }
+    Set-Step 4 'ok'
+    try { $script:LocalInfo = Get-Content -LiteralPath $LocalCfgPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+    Show-DoneLocal $upd
+  } catch {
+    $msg = "$($_.Exception.Message)"
+    if (-not $msg) { $msg = "$_" }
+    if ($msg -eq 'CANCELLED') {
+      Set-Step $cur 'fail'
+      Set-Status '취소했습니다. [다시 시도]를 누르면 다시 진행합니다.' $cRed
+    } else {
+      Log "오류: $msg"
+      Set-Step $cur 'fail'
+      Set-Status "설치를 마치지 못했습니다.`n$msg" $cRed
+    }
+    $lblSub.Text = '문제를 해결한 뒤 [다시 시도]를 누르세요. 기록 파일을 보내 주시면 원인을 찾는 데 도움이 됩니다.'
+    $bar.Visible = $false
+    Set-Buttons 'error'
+  } finally {
+    $script:Running = $false
+    $script:Proc = $null
+  }
+  if ($script:CloseAfter) { $form.Close() }
+}
+
+function Show-DoneLocal([bool]$upd) {
+  Show-Page 'done'
+  Set-Buttons 'done'
+  $lnkUrl.Visible = $false
+  $doneBtns.Visible = $false
+  $t = @()
+  if ($upd) {
+    $lblDoneTitle.Text = [string][char]0x2713 + ' 로컬판 업데이트가 끝났습니다'
+    $lblSub.Text = '판서·자료·설정은 그대로입니다.'
+    if ($script:ServerVersion) { $t += "지금 판: $($script:ServerVersion)" }
+  } else {
+    $lblDoneTitle.Text = [string][char]0x2713 + ' 로컬판 설치가 끝났습니다'
+    $lblSub.Text = "바탕화면의 '$LocalName' 으로 칠판을 엽니다."
+    if ($script:AlreadyConfigured) { $t += '전에 쓰던 판서 기록과 설정을 그대로 이어 씁니다.' }
+    $t += '로그인은 없습니다. 이 PC 에서만 열립니다.'
+    $t += ''
+    $t += '다음 할 일'
+    $t += '  1. [칠판 열기] → 메뉴(⋯) → 교시·시간표 설정에서 우리 학교 종 시각 넣기'
+    $t += '  2. 전자칠판이 이 PC 의 화면이면 그대로 쓰면 됩니다(손가락·펜으로 판서)'
+    $t += '  3. 가끔 교시·시간표 설정 → 저장 공간과 백업에서 백업을 내려받아 두세요'
+  }
+  $t += ''
+  $t += "판서 기록 저장 위치: $LocalData"
+  $t += '학생 호출이 필요해지면 백업을 내려받아 기본판에 되살리면 그대로 이어집니다.'
+  $lblDone.Text = ($t -join "`n")
+}
+
+function Remove-LocalShortcuts { foreach ($l in (Local-Shortcuts)) { Remove-Item -LiteralPath $l -Force -ErrorAction SilentlyContinue } }
+function Remove-LocalApp {
+  Remove-Dir $LocalApp
+  Remove-Item -LiteralPath $LocalCfgPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath (Join-Path $Work 'local-server.log') -Force -ErrorAction SilentlyContinue
+}
+function Remove-LocalData {
+  Remove-Dir $LocalData
+  if (Test-Path -LiteralPath $LocalData) { throw "판서 기록 폴더를 다 지우지 못했습니다: $LocalData" }
+  $script:LocalInfo = $null
+}
+function Remove-LocalAll { Stop-Local; Remove-LocalShortcuts; Remove-LocalApp; Remove-LocalData }
+
+# 로컬판 → 새 칠판(기본판·확장판): 로컬판 백업을 조각마다 받아 그대로 새 칠판에 되살림.
+# 큰 JSON 을 PowerShell 로 다시 만들지 않도록(깊이·크기 제한) 서버가 준 글자를 그대로 넘깁니다.
+# 백업 줄은 모두 {"t":"…"} 로 시작하고 문자열 안의 따옴표는 \" 로 바뀌어 있으므로 '},{"t":"' 에서 줄을 나눌 수 있습니다.
+function Post-Raw([string]$url, [string]$json, [string]$token = '', [int]$timeoutSec = 120) {
+  $h = @{ 'Content-Type' = 'application/json; charset=utf-8' }
+  if ($token) { $h['Authorization'] = "Bearer $token" }
+  $wc = New-Web $h
+  $t = $wc.UploadStringTaskAsync($url, 'POST', $json)
+  Wait-Task $t $timeoutSec $wc
+  return $t.Result
+}
+
+function Migrate-Local {
+  $lurl = "http://127.0.0.1:$LocalPort"
+  Set-Status '로컬판 칠판을 켜는 중…'
+  $up = $false
+  try { $up = (((Fetch-Text "$lurl/api/health" 4) | ConvertFrom-Json).edition -eq 'local') } catch { if ("$_" -eq 'CANCELLED') { throw } }
+  if (-not $up) {
+    $saved = $script:Url; $script:Url = $lurl
+    try { [void](Start-LocalServer) } finally { $script:Url = $saved }
+  }
+  $ltok = ((Post-Raw "$lurl/eboard-api/auth/local" '{}' '' 30) | ConvertFrom-Json).token
+  if (-not $ltok) { throw '로컬판 칠판에 들어가지 못했습니다.' }
+  Set-Status '새 칠판에 로그인하는 중…'
+  $login = (Post-Json "$($script:Url)/eboard-api/login" @{ login_id = $tbId.Text.Trim(); password = $tbPw.Text } 30) | ConvertFrom-Json
+  if (-not $login.token) { throw '새 칠판에 로그인하지 못했습니다.' }
+  $ctok = [string]$login.token
+
+  $file = Join-Path $Work ("local-backup-" + (Get-Date -Format 'yyyyMMdd-HHmm') + '.ndjson')
+  $writer = New-Object IO.StreamWriter($file, $false, (New-Object Text.UTF8Encoding($false)))
+  $script:MigrateFile = $file
+  $tot = [pscustomobject]@{ rows = 0; blobs = 0; skipped = 0 }
+  try {
+    $cursor = $null; $n = 0; $begun = $false
+    do {
+      $q = '/eboard-api/backup/part?media=1'
+      if ($cursor) { $q += '&cursor=' + [Uri]::EscapeDataString($cursor) }
+      $txt = Fetch-Text "$lurl$q" 120 @{ Authorization = "Bearer $ltok" }
+      $a = $txt.IndexOf('"lines":['); $b = $txt.LastIndexOf(',"next":')
+      if ($a -lt 0 -or $b -lt 0) { throw '로컬판 백업을 읽지 못했습니다.' }
+      $arr = $txt.Substring($a + 8, $b - $a - 8)
+      $nextRaw = $txt.Substring($b + 8, $txt.Length - $b - 9)
+      $cursor = ('{"n":' + $nextRaw + '}' | ConvertFrom-Json).n
+      $inner = $arr.Substring(1, $arr.Length - 2)
+      if ($inner) { $writer.Write(($inner -replace '\},\{"t":"', "}`n{`"t`":`"") + "`n") }
+      if (-not $begun) {
+        $m = $inner.IndexOf('},{"t":"config"')
+        if (-not $inner.StartsWith('{"t":"meta"') -or $m -lt 0) { throw '로컬판 백업의 첫 줄이 맞지 않습니다.' }
+        $meta = $inner.Substring(0, $m + 1)
+        $pwJson = ConvertTo-Json ([string]$tbPw.Text) -Compress
+        Set-Status '새 칠판에 되살리는 중…'
+        [void](Post-Raw "$($script:Url)/eboard-api/backup/restore/begin" ('{"password":' + $pwJson + ',"meta":' + $meta + '}') $ctok 60)
+        $begun = $true
+      }
+      if ($inner) {
+        $r = (Post-Raw "$($script:Url)/eboard-api/backup/restore/rows" ('{"lines":' + $arr + '}') $ctok 300) | ConvertFrom-Json
+        $tot.rows += [int]$r.rows; $tot.blobs += [int]$r.blobs; $tot.skipped += [int]$r.skipped
+      }
+      $n++
+      Set-Status "새 칠판에 되살리는 중… ($n 조각, $($tot.rows)줄, 자료 $($tot.blobs)장)"
+    } while ($cursor)
+    [void](Post-Raw "$($script:Url)/eboard-api/backup/restore/end" '{}' $ctok 60)
+  } finally { $writer.Close() }
+  Log "로컬판 기록 옮기기: $($tot.rows)줄, 자료 $($tot.blobs)장, 건너뜀 $($tot.skipped). 백업 파일 $file"
+  $script:Migrated = $tot
+}
+
+function Do-UninstallLocal {
+  $script:Action = 'uninstall-local'
+  $script:Running = $true
+  $script:Cancel = $false
+  $script:Edition = 'local'
+  Init-Steps @('칠판 끄기', '바로가기 지우기', '칠판 파일 지우기', '판서 기록 지우기')
+  Show-Page 'run'
+  Set-Buttons 'running'
+  $bar.Visible = $true
+  $lblTitle.Text = 'classboard 로컬판 지우기'
+  $lblSub.Text = '창을 닫지 말고 기다려 주세요.'
+  Log '── 시작: 로컬판 지우기'
+  $cur = 0
+  try {
+    Set-Step 0 'run'; Stop-Local; Set-Step 0 'ok'
+    $cur = 1; Set-Step 1 'run'; Remove-LocalShortcuts; Set-Step 1 'ok'
+    $cur = 2; Set-Step 2 'run'; Set-Status '칠판 파일을 지우는 중…'; Remove-LocalApp; Set-Step 2 'ok'
+    $cur = 3; Set-Step 3 'run'; Set-Status '판서 기록을 지우는 중…'; Remove-LocalData; Set-Step 3 'ok'
+    Show-Page 'done'
+    Set-Buttons 'removed'
+    $lnkUrl.Visible = $false
+    $doneBtns.Visible = $false
+    $lblDoneTitle.Text = [string][char]0x2713 + ' 로컬판을 지웠습니다'
+    $lblSub.Text = '이 PC 에서 칠판과 판서 기록을 지웠습니다.'
+    $lblDone.Text = (@('바로가기, 칠판 파일, 판서 기록·자료·설정을 지웠습니다.', '', '남은 것', '  · 압축을 푼 classboard 폴더: 이 창을 닫은 뒤 직접 지우세요. [폴더 열기]를 누르면 열립니다.') -join "`n")
+  } catch {
+    $msg = "$($_.Exception.Message)"
+    if (-not $msg) { $msg = "$_" }
+    if ($msg -eq 'CANCELLED') { $msg = '취소했습니다.' }
+    Log "오류: $msg"
+    Set-Step $cur 'fail'
+    Set-Status "지우기를 마치지 못했습니다.`n$msg" $cRed
+    $bar.Visible = $false
     Set-Buttons 'error'
   } finally {
     $script:Running = $false
@@ -1127,7 +1662,7 @@ function Confirm-Typed([string]$word) {
 function Wipe-Files {
   $url = "https://classboard.$($script:Sub).workers.dev"
   $script:Url = $url
-  Set-Status '저장판 자료를 지울 수 있게 칠판을 준비하는 중…'
+  Set-Status '확장판 자료를 지울 수 있게 칠판을 준비하는 중…'
   Put-SetupKey
   $sw = [Diagnostics.Stopwatch]::StartNew()
   $redeployed = $false
@@ -1136,7 +1671,7 @@ function Wipe-Files {
     try {
       $r = (Post-Json "$url/eboard-api/uninstall/wipe-files" @{ setup_key = $script:Key } 60) | ConvertFrom-Json
       $total += [int]$r.deleted
-      Set-Status "저장판 자료를 지우는 중… ($total 개)"
+      Set-Status "확장판 자료를 지우는 중… ($total 개)"
       if ($r.done) { Log "R2 파일 $total 개를 지웠습니다."; return $true }
       $sw.Restart()
       continue
@@ -1193,7 +1728,7 @@ function Do-Uninstall {
   $script:RemovedBuckets = @()
   $script:Edition = 'storage'
   $script:Conf = 'wrangler.storage.jsonc'
-  Init-Steps @('설치 도구 준비', 'Cloudflare 로그인', '계정과 칠판 확인', '저장판 자료 비우기', '칠판 지우기', '이 PC 정리')
+  Init-Steps @('설치 도구 준비', 'Cloudflare 로그인', '계정과 칠판 확인', '확장판 자료 비우기', '칠판 지우기', '이 PC 정리')
   Show-Page 'run'
   Set-Buttons 'running'
   $bar.Visible = $true
@@ -1223,7 +1758,7 @@ function Do-Uninstall {
       if ($script:Sub) { $word = [string]$script:Sub }
       $what = "계정: $($script:Account.name)"
       if ($script:Sub) { $what += "`n칠판 주소: https://classboard.$($script:Sub).workers.dev" }
-      if ($board.Buckets.Count -gt 0) { $what += "`n저장판 R2 버킷: $($board.Buckets -join ', ')" }
+      if ($board.Buckets.Count -gt 0) { $what += "`n확장판 R2 버킷: $($board.Buckets -join ', ')" }
       Set-Status "지울 칠판:`n$what"
       Confirm-Typed $word
     }
@@ -1285,7 +1820,7 @@ function Show-Removed {
   $lblSub.Text = '설치한 것을 모두 정리했습니다.'
   $t = @()
   if ($script:RemovedBoard) { $t += 'Cloudflare 에서 칠판(판서 기록·자료·설정)을 지웠습니다.' }
-  if ($script:RemovedBuckets.Count -gt 0) { $t += "저장판 R2 버킷($($script:RemovedBuckets -join ', '))도 지웠습니다." }
+  if ($script:RemovedBuckets.Count -gt 0) { $t += "확장판 R2 버킷($($script:RemovedBuckets -join ', '))도 지웠습니다." }
   if ($script:Leftover.Count -gt 0) {
     $lblDoneTitle.ForeColor = [Drawing.Color]::FromArgb(154, 103, 0)
     $t += "R2 버킷 $($script:Leftover -join ', ') 은(는) 지우지 못했습니다. Cloudflare 대시보드 → R2 Object Storage 에서 버킷을 비운 뒤 직접 지우세요."
@@ -1335,10 +1870,22 @@ function Show-Done {
     $t += '  2. 교실 전자칠판 브라우저로 주소를 열어 로그인 → "이 기기를 전자칠판으로 등록"'
     $t += '  3. 학생은 칠판의 학급 도구 → 호출 탭의 QR 로 들어옵니다'
   }
+  if ($script:WantMigrate) {
+    $t += ''
+    if ($script:Migrated) {
+      $t += "로컬판 기록을 옮겼습니다($($script:Migrated.rows)줄, 자료 $($script:Migrated.blobs)장$(if ($script:Migrated.skipped) { ", 공간이 모자라 건너뛴 자료 $($script:Migrated.skipped)개" })). 학급도 로컬판 값으로 바뀌었습니다."
+      if ($script:LocalRemoved) { $t += '이 PC 의 로컬판은 지웠습니다.' } else { $t += '로컬판은 그대로 두었습니다. 필요 없으면 설치 창 → 로컬판 → 로컬판 지우기.' }
+    } else {
+      $t += "로컬판 기록은 옮기지 못했습니다: $($script:MigrateError)"
+      $t += '로컬판 칠판의 교시·시간표 설정 → 저장 공간과 백업에서 백업을 받아, 새 칠판의 같은 곳에서 되살리세요.'
+    }
+    if ($script:MigrateFile) { $t += "백업 파일(보관용): $($script:MigrateFile)" }
+  }
   $lblDone.Text = ($t -join "`n")
 }
 
 function Validate-Form {
+  if ($rbLocal.Checked) { return $true }
   if ($script:Mode -eq 'update') { return $true }
   $n = $tbSub.Text.Trim().ToLower()
   if ($n) { $bad = Test-SubName $n; if ($bad) { [void](Msg $bad 'OK' 'Warning'); $tbSub.Focus(); return $false } }
@@ -1346,7 +1893,7 @@ function Validate-Form {
   if ($tbPw.Text.Length -lt 8) { [void](Msg '비밀번호는 8자 이상으로 넣으세요.' 'OK' 'Warning'); $tbPw.Focus(); return $false }
   if ($tbPw.Text -ne $tbPw2.Text) { [void](Msg '비밀번호 확인이 다릅니다. 같은 비밀번호를 두 번 넣으세요.' 'OK' 'Warning'); $tbPw2.Focus(); return $false }
   if ($PrevEdition -eq 'storage' -and $rbBasic.Checked) {
-    $a = Msg "전에 저장판으로 설치했습니다. 기본판으로 바꾸면 R2 에 둔 자료와 보관한 판서 기록을 칠판에서 열 수 없게 됩니다.`n그래도 기본판으로 할까요?" 'YesNo' 'Warning'
+    $a = Msg "전에 확장판으로 설치했습니다. 기본판으로 바꾸면 R2 에 둔 자료와 보관한 판서 기록을 칠판에서 열 수 없게 됩니다.`n그래도 기본판으로 할까요?" 'YesNo' 'Warning'
     if ($a -ne 'Yes') { return $false }
   }
   return $true
@@ -1358,15 +1905,23 @@ $btnMain.Add_Click({
   switch ($script:State) {
     'form' {
       if ($script:Mode -eq 'update' -and $PrevEdition -eq 'storage' -and $rbBasic.Checked) {
-        $a = Msg "전에 저장판으로 설치했습니다. 기본판으로 바꾸면 R2 에 둔 자료와 보관한 판서 기록을 칠판에서 열 수 없게 됩니다.`n그래도 기본판으로 할까요?" 'YesNo' 'Warning'
+        $a = Msg "전에 확장판으로 설치했습니다. 기본판으로 바꾸면 R2 에 둔 자료와 보관한 판서 기록을 칠판에서 열 수 없게 됩니다.`n그래도 기본판으로 할까요?" 'YesNo' 'Warning'
         if ($a -ne 'Yes') { return }
       }
+      if ($rbLocal.Checked) { Do-InstallLocal; return }
       if (Validate-Form) { Do-Install }
     }
-    'error' { if ($script:Action -eq 'uninstall') { Do-Uninstall } else { Do-Install } }
+    'error' {
+      switch ($script:Action) {
+        'uninstall' { Do-Uninstall }
+        'install-local' { Do-InstallLocal }
+        'uninstall-local' { Do-UninstallLocal }
+        default { Do-Install }
+      }
+    }
     'removed' { Start-Process explorer.exe -ArgumentList ('"' + $Root + '"') }
-    'done'  { Start-Process "$($script:Url)/login" }
-    'done-log' { Start-Process "$($script:Url)/login" }
+    'done'  { Open-Board }
+    'done-log' { Open-Board }
   }
 })
 $btnBack.Add_Click({ Show-Page 'form'; Set-Buttons 'form' })
@@ -1380,11 +1935,11 @@ $btnLog.Add_Click({
 $btnOpenLog.Add_Click({ Start-Process notepad.exe -ArgumentList ('"' + $LogPath + '"') })
 $btnCopy.Add_Click({ try { [Windows.Forms.Clipboard]::SetText($script:Url); $btnCopy.Text = '복사했습니다' } catch { } })
 $btnMemo.Add_Click({ if ($script:MemoPath) { Start-Process notepad.exe -ArgumentList ('"' + $script:MemoPath + '"') } })
-$lnkUrl.Add_LinkClicked({ Start-Process "$($script:Url)/login" })
+$lnkUrl.Add_LinkClicked({ Open-Board })
 $lnkRemove.Add_LinkClicked({
   $a = Msg "칠판을 지우면 판서 기록·자료·설정이 모두 지워지고 되살릴 수 없습니다.`n`n백업을 내려받아 두었나요?`n(칠판 메뉴 → 교시·시간표 설정 → 저장 공간과 백업 → 백업 내려받기)`n`n[예] 백업했거나 필요 없음, 계속 진행`n[아니요] 멈추고 백업부터 하기" 'YesNo' 'Warning'
   if ($a -ne 'Yes') { return }
-  Do-Uninstall
+  if ($rbLocal.Checked) { Do-UninstallLocal } else { Do-Uninstall }
 })
 $lnkMode.Add_LinkClicked({
   if ($script:Mode -eq 'update') { $script:Mode = 'install' } else { $script:Mode = 'update' }
@@ -1402,7 +1957,13 @@ $form.Add_FormClosing({
     $e.Cancel = $true
   }
 })
-$form.Add_Shown({ $form.Activate(); if ($script:Mode -ne 'update') { $tbSub.Focus() } })
+$form.Add_Shown({
+  $form.Activate()
+  if ($script:Mode -ne 'update') {
+    if (-not $PrevEdition -and -not $LocalInfo) { Show-EditionCompare }     # 처음 설치: 판을 고르기 전에 비교부터
+    if (-not $rbLocal.Checked) { $tbSub.Focus() }
+  }
+})
 
 $form.AcceptButton = $btnMain
 Show-Page 'form'

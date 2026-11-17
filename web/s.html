@@ -6,8 +6,8 @@
 <meta name="theme-color" content="#f4f4f1">
 <title>전자칠판 · 학생</title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="css/board.css?v=0.12.1">
-<link rel="stylesheet" href="css/student.css?v=0.12.1">
+<link rel="stylesheet" href="css/board.css?v=0.14.0">
+<link rel="stylesheet" href="css/student.css?v=0.14.0">
 <style>
   .stu-nums { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 10px; width: min(560px, 100%); }
   .stu-nums button { min-height: 60px; border-radius: 14px; border: 1px solid var(--line); background: #fff; font-size: 22px; font-weight: 700; cursor: pointer; }
@@ -18,7 +18,7 @@
 </style>
 </head>
 <!-- data-v 는 서버 버전(src/room.ts SERVER_VERSION)과 같게 올립니다. -->
-<body class="student" data-v="0.12.1">
+<body class="student" data-v="0.14.0">
   <header id="topbar">
     <strong id="me"></strong>
     <span id="mode-label" class="session"></span>
@@ -55,7 +55,7 @@
     </div>
   </main>
 
-  <!-- 사진 보내기는 저장판에서 엽니다 -->
+  <!-- 사진 보내기는 확장판에서 엽니다 -->
   <main id="photo" class="stu-screen" hidden>
     <h1>사진 보내기</h1>
     <p class="muted" id="photo-msg"></p>
@@ -83,6 +83,6 @@
   <div id="toast" role="status" aria-live="polite"></div>
   <div id="login-needed" class="banner" hidden></div>
 
-  <script type="module" src="js/student.js?v=0.12.1"></script>
+  <script type="module" src="js/student.js?v=0.14.0"></script>
 </body>
 </html>

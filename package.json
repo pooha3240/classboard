@@ -1,6 +1,6 @@
 {
   "name": "classboard",
-  "version": "0.12.1",
+  "version": "0.14.0",
   "private": true,
   "description": "교사 개인 Cloudflare 계정에 설치하는 학급 전자칠판",
   "license": "SEE LICENSE IN LICENSE",
