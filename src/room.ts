@@ -21,10 +21,10 @@ import { sign, verify, TokenError, randomKey, hashPassword, checkPassword, sha25
 import { currentPeriod, kstNow, nextBoundary, periodLabel, normalize, type Bell } from "./lib/periods";
 import {
   OpError, ID_RE, KINDS, BG_TYPES, MAX_LIVE_POINTS, MAX_OPS_PER_BATCH,
-  validateObj, cleanWebUrl, cleanColor, num, type Obj,
+  validateObj, cleanWebUrl, cleanColor, num, localVideoMeta, type Obj,
 } from "./lib/validate";
 
-export const SERVER_VERSION = "0.12.1";
+export const SERVER_VERSION = "0.13.0";
 
 const TEACHER_DEVICES = new Set(["display", "teacher-pc", "teacher-tablet"]);
 const TOKEN_DAYS = 30;
@@ -123,7 +123,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
   constructor(ctx: DurableObjectState, env: Record<string, unknown>) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
-    this.r2 = (env.FILES as R2Bucket | undefined) ?? undefined;       // 저장판이면 R2 가 연결됨
+    this.r2 = (env.FILES as R2Bucket | undefined) ?? undefined;       // 확장판이면 R2 가 연결됨
     this.media = new MediaStore(this.sql, { total: DB_BUDGET, dbSize: () => this.sql.databaseSize, pinned: () => this.plan.pinnedSets(),
       r2: this.r2, archived: () => this.archivedBytes() });
     this.plan = new PlanStore(this.sql, this.media);
@@ -387,7 +387,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       const pid = Number(th[1]);
       if (!this.configured() || url.searchParams.get("s") !== await shortSig(this.cfg("secret")!, `thumb:${pid}`)) return new Response("not found", { status: 404 });
       const r = this.sql.exec<{ data: ArrayBuffer }>("SELECT data FROM page_thumbs WHERE page_id = ?", pid).toArray()[0]
-        ?? await this.archive.thumb(pid).then((d) => (d ? { data: d } : undefined));          // 저장판: R2 로 옮긴 수업
+        ?? await this.archive.thumb(pid).then((d) => (d ? { data: d } : undefined));          // 확장판: R2 로 옮긴 수업
       if (!r) return new Response("not found", { status: 404 });
       return new Response(r.data, { headers: { "content-type": sniffImage(new Uint8Array(r.data)) ?? "image/webp",
         "cache-control": "private, max-age=31536000, immutable", "x-content-type-options": "nosniff" } });
@@ -540,7 +540,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       return fail(404, "not_found", "없는 시험 요청");
     }
 
-    /* 백업 내려받기·되살리기(기본판·저장판) */
+    /* 백업 내려받기·되살리기(기본판·확장판) */
     if (path.startsWith("/backup/")) {
       if (path === "/backup/part" && method === "GET") {
         if (!elev) return needPin();
@@ -821,7 +821,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
         if (!Number(r.used)) continue;                         // 아무것도 쓰지 않은 수업은 숨김
         let tp = r.thumb_page ? Number(r.thumb_page) : 0;
         let tseq = tp ? this.sql.exec<{ seq: number }>("SELECT seq FROM page_thumbs WHERE page_id = ?", tp).one().seq : 0;
-        if (!tp && r.archived) { tp = this.archive.thumbsOf(Number(r.id))[0] ?? 0; tseq = 0; }     // 저장판: R2 로 옮긴 수업
+        if (!tp && r.archived) { tp = this.archive.thumbsOf(Number(r.id))[0] ?? 0; tseq = 0; }     // 확장판: R2 로 옮긴 수업
         sessions.push({ ...this.sessionMeta(r), pages: Number(r.used), joint: null, first_page: Number(r.first_page) || null,
           started_at: new Date(Number(r.created_at) + 9 * 3600e3).toISOString().slice(11, 16),
           thumb: tp ? await this.thumbUrl(tp, tseq) : null });
@@ -864,7 +864,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
       const pid = Number(st[1]);
       const sid = this.sql.exec<{ s: number }>("SELECT session_id AS s FROM pages WHERE id = ?", pid).toArray()[0]?.s;
       if (sid !== undefined && this.archive.isArchived(sid)) {
-        // 저장판: R2 로 옮긴 수업은 보관본에서 읽음(칠판 저장소로 되돌리지 않음)
+        // 확장판: R2 로 옮긴 수업은 보관본에서 읽음(칠판 저장소로 되돌리지 않음)
         const data = await this.archive.load(sid);
         const ap = data?.pages.find((x) => x.id === pid);
         const row = this.sql.exec<PageRow>("SELECT * FROM pages WHERE id = ?", pid).toArray()[0];
@@ -1141,11 +1141,11 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
 
   async alarm(): Promise<void> {
     this.flushPages();
-    if (Math.random() < (this.r2 ? 0.25 : 0.05)) {       // 가끔만: 올리다 끊긴 자료, 오래된 판서 기록(저장판은 R2 로 옮김)
+    if (Math.random() < (this.r2 ? 0.25 : 0.05)) {       // 가끔만: 올리다 끊긴 자료, 오래된 판서 기록(확장판은 R2 로 옮김)
       await this.media.sweep();
       for (const ps of this.pages.values()) if (ps.seq > ps.saved_seq) this.savePage(ps);
       let prune = !this.r2;
-      if (this.r2) {                                     // 저장판: 지우지 않고 R2 로 옮김. R2 한도에 걸리면 기본판처럼 정리
+      if (this.r2) {                                     // 확장판: 지우지 않고 R2 로 옮김. R2 한도에 걸리면 기본판처럼 정리
         const cutoff = new Date(Date.now() + 9 * 3600e3 - ARCHIVE_AFTER_DAYS * 86400e3).toISOString().slice(0, 10);
         const left = R2_CAP - this.media.usage("r2") - this.archive.totalBytes();
         try {
@@ -1375,7 +1375,7 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
         }
         const s = this.getSession(Number(d.session_id));
         if (!s) return { ok: false, error: "bad_session" };
-        if (!(await this.archive.restore(s.id as number))) return { ok: false, error: "archive_missing" };   // 저장판: 보관한 수업은 되돌려서 엶
+        if (!(await this.archive.restore(s.id as number))) return { ok: false, error: "archive_missing" };   // 확장판: 보관한 수업은 되돌려서 엶
         this.switchTo(s.id as number);
         return { ok: true };
       }
@@ -1451,10 +1451,13 @@ export class ClassRoom extends DurableObject<Record<string, unknown>> {
           this.media.touch([asset.set_id]);
         }
         else if (bg === "video") {
-          // 기본판: 유튜브만(동영상 파일은 저장판). 각 기기가 직접 재생하고 진행 기기가 재생·멈춤을 맞춤
-          const yt = String(metaIn.yt ?? "");
-          if (!/^[\w-]{11}$/.test(yt)) return { ok: false, error: "not_available" };
-          meta = { src: "yt", yt, start: Math.round(num(metaIn.start ?? 0, 0, 86400)) };
+          // 유튜브 또는 이 기기의 동영상 파일(서버에 올리지 않음). 각 기기가 직접 재생하고 진행 기기가 재생·멈춤을 맞춤
+          if (metaIn.src === "local") meta = localVideoMeta(metaIn);
+          else {
+            const yt = String(metaIn.yt ?? "");
+            if (!/^[\w-]{11}$/.test(yt)) return { ok: false, error: "not_available" };
+            meta = { src: "yt", yt, start: Math.round(num(metaIn.start ?? 0, 0, 86400)) };
+          }
         }
         else return { ok: false, error: "not_available" };
         ps.bg_type = bg; ps.bg_meta = meta; ps.play = null;

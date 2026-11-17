@@ -97,11 +97,11 @@ async function checkVersion() {
   let latest = '';
   try { latest = (await (await fetch('https://raw.githubusercontent.com/pooha3240/classboard/main/package.json', { cache: 'no-store' })).json()).version; } catch { /* 무시 */ }
   const newer = (a, b) => { const x = a.split('.').map(Number), y = b.split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
-  el.innerHTML = `${edition === 'storage' ? '저장판' : '기본판'} · 지금 판: <b>${esc(cur || '?')}</b>` + (latest ? ` · 최신 판: <b>${esc(latest)}</b> ${newer(latest, cur) ? '<span class="tag-new">업데이트 있음</span>' : '(최신)'}` : ' · 최신 판을 확인하지 못했습니다');
+  el.innerHTML = `${edition === 'storage' ? '확장판' : '기본판'} · 지금 판: <b>${esc(cur || '?')}</b>` + (latest ? ` · 최신 판: <b>${esc(latest)}</b> ${newer(latest, cur) ? '<span class="tag-new">업데이트 있음</span>' : '(최신)'}` : ' · 최신 판을 확인하지 못했습니다');
 }
 checkVersion();
 
-// ── 저장판: 저장 공간·백업·되살리기 ──
+// ── 확장판: 저장 공간·백업·되살리기 ──
 const mb = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(1)}GB` : n >= 1e6 ? `${Math.round(n / 1e6)}MB` : `${Math.max(1, Math.round(n / 1e3))}KB`);
 let edition = 'basic';
 async function loadStore(ed = edition) {

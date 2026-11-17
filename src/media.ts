@@ -7,13 +7,13 @@
  *   넘치면 오래 안 쓴 자료부터 지웁니다.
  * - 파일 주소에는 자료마다 무작위 키가 들어가 있어, 로그인 없이 <img> 로 바로 불러옵니다(주소를 아는 사람만).
  *
- * 저장판(R2 연결): 새 자료는 R2 에 `m/<id>/<key>`(미리보기 `.t`)로 두고, 한도를 크게 씁니다(R2_MEDIA_QUOTA).
+ * 확장판(R2 연결): 새 자료는 R2 에 `m/<id>/<key>`(미리보기 `.t`)로 두고, 한도를 크게 씁니다(R2_MEDIA_QUOTA).
  * 기본판 때 올린 자료(loc='do')는 그대로 DO 에서 내려줍니다. R2 전체는 R2_CAP(무료 10GB 아래)에서 막습니다.
  */
 import { randomKey } from "./lib/token";
 
 export const MEDIA_QUOTA = 700 * 1000 * 1000;     // 700MB (기본판, DO 안)
-export const R2_CAP = 8 * 1000 * 1000 * 1000;      // 저장판: R2 전체(자료 + 보관한 판서 기록) 8GB — 무료 10GB 를 넘지 않게
+export const R2_CAP = 8 * 1000 * 1000 * 1000;      // 확장판: R2 전체(자료 + 보관한 판서 기록) 8GB — 무료 10GB 를 넘지 않게
 export const R2_MEDIA_QUOTA = 6 * 1000 * 1000 * 1000;   // 그중 자료 6GB
 export const r2Key = (a: { id: number; key: string }, thumb = false) => `m/${a.id}/${a.key}${thumb ? ".t" : ""}`;
 export const MAX_PDF_PAGES = 60;
@@ -66,7 +66,7 @@ export class MediaStore {
     r2?: R2Bucket; archived?: () => number } = { total: Infinity, dbSize: () => 0 }) {}
 
   get r2(): R2Bucket | undefined { return this.budget.r2; }
-  /** 새 자료를 둘 곳의 한도. 저장판: R2 자료 한도와 'R2 전체 - 보관한 판서 기록' 중 작은 쪽 */
+  /** 새 자료를 둘 곳의 한도. 확장판: R2 자료 한도와 'R2 전체 - 보관한 판서 기록' 중 작은 쪽 */
   quota(): number {
     if (this.r2) return Math.max(0, Math.min(R2_MEDIA_QUOTA, R2_CAP - (this.budget.archived?.() ?? 0)));
     const other = Math.max(0, this.budget.dbSize() - this.usage("do"));

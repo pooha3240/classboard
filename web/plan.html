@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>주간 진도·차시 자료</title>
-<link rel="stylesheet" href="css/board.css?v=0.12.1">
-<link rel="stylesheet" href="css/pages.css?v=0.12.1">
+<link rel="stylesheet" href="css/board.css?v=0.13.0">
+<link rel="stylesheet" href="css/pages.css?v=0.13.0">
 </head>
 <body class="page-body plan-body" data-login="login.html">
   <header class="page-top">
@@ -60,16 +60,17 @@
       <div class="pd-add" id="pd-add">
         <input type="file" id="pd-file" accept="image/*,.heic,.heif,.pdf,application/pdf" hidden>
         <button type="button" class="chip primary" id="pd-upload">파일 올리기 (PDF·사진)</button>
+        <button type="button" class="chip" id="pd-video">동영상 파일 (이 기기)</button>
         <button type="button" class="chip" id="pd-recent-btn">최근 자료에서</button>
         <span class="pd-url"><input type="text" id="pd-url" placeholder="유튜브·웹페이지 주소"><button type="button" class="chip" id="pd-url-add">붙이기</button></span>
       </div>
       <div id="pd-progress" class="muted small"></div>
-      <p class="muted small">차시에 붙인 사진·PDF 는 자동으로 지워지지 않습니다(모두 합쳐 300MB 까지). 동영상은 유튜브 주소로 붙이세요.</p>
+      <p class="muted small">차시에 붙인 사진·PDF 는 자동으로 지워지지 않습니다(모두 합쳐 300MB 까지). 동영상 파일은 서버에 올리지 않고 이름만 붙입니다. 수업할 기기(전자칠판)에서 고르면 그 기기가 기억해 두었다가 그 시간에 바로 재생합니다(크롬 PC). 다른 기기에서는 칠판에서 파일을 한 번 골라 주세요.</p>
       <div id="pd-recent" class="pd-recent" hidden></div>
     </div>
   </dialog>
 
   <div id="toast" role="status" aria-live="polite"></div>
-  <script type="module" src="js/plan.js?v=0.12.1"></script>
+  <script type="module" src="js/plan.js?v=0.13.0"></script>
 </body>
 </html>

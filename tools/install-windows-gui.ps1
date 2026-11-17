@@ -417,12 +417,12 @@ $edFlow = New-Flow
 $rbBasic = New-Object Windows.Forms.RadioButton
 $rbBasic.Text = '기본판'; $rbBasic.AutoSize = $true
 $rbStorage = New-Object Windows.Forms.RadioButton
-$rbStorage.Text = '저장판'; $rbStorage.AutoSize = $true
+$rbStorage.Text = '확장판'; $rbStorage.AutoSize = $true
 $rbStorage.Margin = New-Object Windows.Forms.Padding([int]($U * 1.2), 3, 3, 3)
 $edFlow.Controls.Add($rbBasic)
 $edFlow.Controls.Add($rbStorage)
 if ($PrevEdition -eq 'storage') { $rbStorage.Checked = $true } else { $rbBasic.Checked = $true }
-[void](Add-Row 'edition' '판' $edFlow '기본판: 카드 등록 없이 무료(자료 700MB, 판서 재생 60일). 저장판: R2 사용(자료 6GB, 판서 기록 계속 보관). 저장판은 Cloudflare 에 카드(또는 PayPal)를 등록하고 R2 를 먼저 켜야 합니다.')
+[void](Add-Row 'edition' '판' $edFlow '기본판: 카드 등록 없이 무료(자료 700MB, 판서 재생 60일). 확장판: R2 사용(자료 6GB, 판서 기록 계속 보관). 확장판은 Cloudflare 에 카드(또는 PayPal)를 등록하고 R2 를 먼저 켜야 합니다.')
 
 $tbSub = New-Text ([int]($U * 13)) -Ascii
 $tbSub.CharacterCasing = 'Lower'
@@ -812,12 +812,12 @@ function Ensure-Account {
   Select-Account
   $acct = $script:Account
 
-  # 저장판: R2 가 켜져 있는지 먼저 확인
+  # 확장판: R2 가 켜져 있는지 먼저 확인
   if ($script:Edition -eq 'storage') {
     $r2off = $false
     try { [void](Cf GET "/accounts/$($acct.id)/r2/buckets?per_page=1") } catch { if ("$_" -match '10042|enable R2') { $r2off = $true } }
     if ($r2off) {
-      $a = Msg "이 계정은 아직 R2 가 켜져 있지 않습니다. 저장판은 R2 를 먼저 켜야 합니다.`n(카드 또는 PayPal 등록, 무료 10GB 안에서는 청구 없음)`n`n지금 Cloudflare 의 R2 화면을 열까요? R2 를 켠 뒤 이 창에서 [다시 시도]를 누르세요." 'YesNo' 'Warning'
+      $a = Msg "이 계정은 아직 R2 가 켜져 있지 않습니다. 확장판은 R2 를 먼저 켜야 합니다.`n(카드 또는 PayPal 등록, 무료 10GB 안에서는 청구 없음)`n`n지금 Cloudflare 의 R2 화면을 열까요? R2 를 켠 뒤 이 창에서 [다시 시도]를 누르세요." 'YesNo' 'Warning'
       if ($a -eq 'Yes') { Start-Process "https://dash.cloudflare.com/$($acct.id)/r2/overview" }
       throw 'R2 를 켠 뒤 [다시 시도]를 누르세요. 카드 등록 없이 쓰려면 [이전]에서 기본판을 고르세요.'
     }
@@ -1127,7 +1127,7 @@ function Confirm-Typed([string]$word) {
 function Wipe-Files {
   $url = "https://classboard.$($script:Sub).workers.dev"
   $script:Url = $url
-  Set-Status '저장판 자료를 지울 수 있게 칠판을 준비하는 중…'
+  Set-Status '확장판 자료를 지울 수 있게 칠판을 준비하는 중…'
   Put-SetupKey
   $sw = [Diagnostics.Stopwatch]::StartNew()
   $redeployed = $false
@@ -1136,7 +1136,7 @@ function Wipe-Files {
     try {
       $r = (Post-Json "$url/eboard-api/uninstall/wipe-files" @{ setup_key = $script:Key } 60) | ConvertFrom-Json
       $total += [int]$r.deleted
-      Set-Status "저장판 자료를 지우는 중… ($total 개)"
+      Set-Status "확장판 자료를 지우는 중… ($total 개)"
       if ($r.done) { Log "R2 파일 $total 개를 지웠습니다."; return $true }
       $sw.Restart()
       continue
@@ -1193,7 +1193,7 @@ function Do-Uninstall {
   $script:RemovedBuckets = @()
   $script:Edition = 'storage'
   $script:Conf = 'wrangler.storage.jsonc'
-  Init-Steps @('설치 도구 준비', 'Cloudflare 로그인', '계정과 칠판 확인', '저장판 자료 비우기', '칠판 지우기', '이 PC 정리')
+  Init-Steps @('설치 도구 준비', 'Cloudflare 로그인', '계정과 칠판 확인', '확장판 자료 비우기', '칠판 지우기', '이 PC 정리')
   Show-Page 'run'
   Set-Buttons 'running'
   $bar.Visible = $true
@@ -1223,7 +1223,7 @@ function Do-Uninstall {
       if ($script:Sub) { $word = [string]$script:Sub }
       $what = "계정: $($script:Account.name)"
       if ($script:Sub) { $what += "`n칠판 주소: https://classboard.$($script:Sub).workers.dev" }
-      if ($board.Buckets.Count -gt 0) { $what += "`n저장판 R2 버킷: $($board.Buckets -join ', ')" }
+      if ($board.Buckets.Count -gt 0) { $what += "`n확장판 R2 버킷: $($board.Buckets -join ', ')" }
       Set-Status "지울 칠판:`n$what"
       Confirm-Typed $word
     }
@@ -1285,7 +1285,7 @@ function Show-Removed {
   $lblSub.Text = '설치한 것을 모두 정리했습니다.'
   $t = @()
   if ($script:RemovedBoard) { $t += 'Cloudflare 에서 칠판(판서 기록·자료·설정)을 지웠습니다.' }
-  if ($script:RemovedBuckets.Count -gt 0) { $t += "저장판 R2 버킷($($script:RemovedBuckets -join ', '))도 지웠습니다." }
+  if ($script:RemovedBuckets.Count -gt 0) { $t += "확장판 R2 버킷($($script:RemovedBuckets -join ', '))도 지웠습니다." }
   if ($script:Leftover.Count -gt 0) {
     $lblDoneTitle.ForeColor = [Drawing.Color]::FromArgb(154, 103, 0)
     $t += "R2 버킷 $($script:Leftover -join ', ') 은(는) 지우지 못했습니다. Cloudflare 대시보드 → R2 Object Storage 에서 버킷을 비운 뒤 직접 지우세요."
@@ -1346,7 +1346,7 @@ function Validate-Form {
   if ($tbPw.Text.Length -lt 8) { [void](Msg '비밀번호는 8자 이상으로 넣으세요.' 'OK' 'Warning'); $tbPw.Focus(); return $false }
   if ($tbPw.Text -ne $tbPw2.Text) { [void](Msg '비밀번호 확인이 다릅니다. 같은 비밀번호를 두 번 넣으세요.' 'OK' 'Warning'); $tbPw2.Focus(); return $false }
   if ($PrevEdition -eq 'storage' -and $rbBasic.Checked) {
-    $a = Msg "전에 저장판으로 설치했습니다. 기본판으로 바꾸면 R2 에 둔 자료와 보관한 판서 기록을 칠판에서 열 수 없게 됩니다.`n그래도 기본판으로 할까요?" 'YesNo' 'Warning'
+    $a = Msg "전에 확장판으로 설치했습니다. 기본판으로 바꾸면 R2 에 둔 자료와 보관한 판서 기록을 칠판에서 열 수 없게 됩니다.`n그래도 기본판으로 할까요?" 'YesNo' 'Warning'
     if ($a -ne 'Yes') { return $false }
   }
   return $true
@@ -1358,7 +1358,7 @@ $btnMain.Add_Click({
   switch ($script:State) {
     'form' {
       if ($script:Mode -eq 'update' -and $PrevEdition -eq 'storage' -and $rbBasic.Checked) {
-        $a = Msg "전에 저장판으로 설치했습니다. 기본판으로 바꾸면 R2 에 둔 자료와 보관한 판서 기록을 칠판에서 열 수 없게 됩니다.`n그래도 기본판으로 할까요?" 'YesNo' 'Warning'
+        $a = Msg "전에 확장판으로 설치했습니다. 기본판으로 바꾸면 R2 에 둔 자료와 보관한 판서 기록을 칠판에서 열 수 없게 됩니다.`n그래도 기본판으로 할까요?" 'YesNo' 'Warning'
         if ($a -ne 'Yes') { return }
       }
       if (Validate-Form) { Do-Install }

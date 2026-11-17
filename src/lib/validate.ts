@@ -25,6 +25,23 @@ export function num(v: unknown, lo: number, hi: number): number {
 
 const round1 = (v: number) => Math.round(v * 10) / 10;
 
+const THUMB_RE = /^data:image\/(webp|jpeg|png);base64,[A-Za-z0-9+/]+=*$/;
+
+/**
+ * 이 기기의 동영상 파일(모든 판): 파일은 서버에 올리지 않고 이름·크기·길이·작은 미리보기만 받습니다.
+ * 재생은 그 파일이 있는 기기가 직접 하고, 서버는 재생·멈춤·위치만 알립니다.
+ */
+export function localVideoMeta(m: Record<string, unknown>): Record<string, unknown> {
+  const name = String(m.name ?? "").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 200);
+  if (!name) throw new OpError("bad_name");
+  const size = Math.round(num(m.size, 1, 1e13));
+  const dur = Math.round(num(m.dur ?? 0, 0, 86400) * 100) / 100;
+  const w = Math.round(num(m.w ?? 0, 0, 20000));
+  const h = Math.round(num(m.h ?? 0, 0, 20000));
+  const thumb = typeof m.thumb === "string" && m.thumb.length <= 60000 && THUMB_RE.test(m.thumb) ? m.thumb : null;
+  return { src: "local", name, size, dur, w, h, thumb };
+}
+
 function validateShape(d: Record<string, unknown>, pw: number, ph: number): Obj {
   const kind = d.kind as string;
   if (!SHAPE_KINDS.has(kind)) throw new OpError("bad_kind");

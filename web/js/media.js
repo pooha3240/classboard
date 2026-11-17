@@ -4,6 +4,7 @@ import { isImageBg, BOARD_WHITE, BOARD_GREEN, pageColor } from './shapes.js';
 import { sha256Hex, convertImage, openPdf } from './convert.js';
 import { RemoteTab, helperVersion, onHelperCast, castEnded } from './remote.js';
 import { askConfirm } from './ui.js';
+import { isVideoFile, VIDEO_ACCEPT, describe as describeVideo, remember as rememberVideo, pickFile, dropHandle } from './localvideo.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -11,10 +12,10 @@ const ls = {
   get(k, d) { try { const v = localStorage.getItem('eboard.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem('eboard.' + k, JSON.stringify(v)); } catch { /* 무시 */ } },
 };
-const ACCEPT = 'image/*,.heic,.heif,.pdf,application/pdf';   // 기본판: 동영상 파일은 받지 않음(유튜브 주소로)
+const ACCEPT = 'image/*,.heic,.heif,.pdf,application/pdf';   // 서버에 올리는 것: 사진·PDF
+const ACCEPT_ALL = `${ACCEPT},${VIDEO_ACCEPT}`;                // 불러오기 창: 동영상은 올리지 않고 이 기기에서 재생
 const KIND_LABEL = { pdf: 'PDF', image: '사진', capture: '웹캠', video: '동영상' };
 const MB = 1024 * 1024;
-const isVideoFile = (f) => /^video\//.test(f.type || '') || /\.(mp4|m4v|mov|webm)$/i.test(f.name || '');
 export const YT_EMBED = /^https:\/\/www\.youtube\.com\/embed\/([\w-]{11})(?:\?start=(\d+))?$/;
 
 // 올리기 전에 이 기기에서 열어 봄: 재생 가능한지, 화면 크기, 미리보기 그림(첫 장면 근처)
@@ -54,7 +55,7 @@ const HOW = {
 export async function uploadFile(file, { kind = 'file', token, onProgress = () => {} }) {
   const ext = (String(file.name || '').match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase();
   if (HOW[ext]) throw new Error(`${ext.toUpperCase()} 파일은 PDF로 저장해서 올려 주세요 (${HOW[ext]})`);
-  if (isVideoFile(file)) throw new Error('기본판에서는 동영상 파일을 올릴 수 없습니다. 유튜브(일부 공개)에 올려 주소로 띄워 주세요');
+  if (isVideoFile(file)) throw new Error('동영상 파일은 서버에 올리지 않습니다. 칠판의 자료 창에서 불러오면 이 기기에서 바로 재생합니다');
   if (file.size > 100 * MB) throw new Error('파일이 너무 큽니다 (최대 100MB)');
   const isPdf = file.type === 'application/pdf' || ext === 'pdf';
   const akind = isPdf ? 'pdf' : (kind === 'capture' ? 'capture' : 'image');
@@ -136,8 +137,8 @@ export class MediaTools {
           <button type="button" class="bc dark" data-bc="${BOARD_GREEN}" style="--c:${BOARD_GREEN}">칠판</button>
           <button type="button" class="bc pal" data-bc="pick" title="다른 색·스포이드">🎨 다른 색</button>
         </div>
-        <button type="button" class="ct-big" id="md-open">사진·PDF 불러오기</button>
-        <input type="file" id="md-file" accept="${ACCEPT}" hidden>
+        <button type="button" class="ct-big" id="md-open">사진·PDF·동영상 불러오기</button>
+        <input type="file" id="md-file" accept="${ACCEPT_ALL}" hidden>
         <p class="muted small" id="md-hint">교사 PC 에서는 파일을 칠판에 끌어다 놓거나, 복사한 그림을 붙여넣기(Ctrl+V)해도 됩니다.</p>
         <div class="md-progress" id="md-progress" hidden><i></i><span></span></div>
         <div class="mp-grid two">
@@ -162,7 +163,12 @@ export class MediaTools {
     document.body.appendChild(el);
     this.panel = el;
     $('.ct-close', el).onclick = () => { el.hidden = true; };
-    $('#md-open', el).onclick = () => $('#md-file', el).click();
+    // 크롬 PC 는 파일 위치를 기억할 수 있는 창(동영상을 다음에도 다시 열 수 있게), 아니면 일반 파일 창
+    $('#md-open', el).onclick = async () => {
+      if (!window.showOpenFilePicker) { $('#md-file', el).click(); return; }
+      const r = await pickFile(ACCEPT_ALL, false);
+      if (r) this.uploadAndPick(r.file, r.handle);
+    };
     $('#md-file', el).onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) this.uploadAndPick(f); };
     $('#md-cam', el).onclick = () => { el.hidden = true; this.openCam(); };
     $('#md-clear', el).onclick = () => this.clearBg();
@@ -213,10 +219,10 @@ export class MediaTools {
       const j = await this._api(`/plan/now?grade=${k.grade}&class=${k.class}`);
       this.lessonItems = j.items || [];
       if (!j.lesson && !this.lessonItems.length) return;
-      const name = (m) => m.title || (m.kind === 'yt' ? '유튜브' : m.kind === 'web' ? m.url : m.kind === 'video' ? '동영상' : '자료');
+      const name = (m) => m.title || (m.kind === 'yt' ? '유튜브' : m.kind === 'web' ? m.url : m.kind === 'local' ? (m.meta && m.meta.name) || '동영상' : m.kind === 'video' ? '동영상' : '자료');
       box.innerHTML = `<h4>이 시간 차시 자료</h4><p class="small">${esc(j.subject || '')} ${esc(j.lesson || '')}</p>
-        ${this.lessonItems.length ? `<div class="md-recent">${this.lessonItems.map((m, i) => `<button type="button" class="md-file ${m.kind === 'video' ? 'video' : ''}" data-li="${i}">
-          ${m.thumb ? `<img src="${m.thumb}" alt="">` : `<b class="md-ico">${m.kind === 'yt' ? '▶' : '🌐'}</b>`}<span><b>${esc(name(m))}</b><small>${m.kind === 'pages' ? `${m.count}쪽` : m.kind === 'video' ? '동영상' : m.kind === 'yt' ? '유튜브' : '웹페이지'} · 넣기</small></span></button>`).join('')}</div>
+        ${this.lessonItems.length ? `<div class="md-recent">${this.lessonItems.map((m, i) => `<button type="button" class="md-file ${m.kind === 'video' || m.kind === 'local' ? 'video' : ''}" data-li="${i}">
+          ${m.thumb ? `<img src="${m.thumb}" alt="">` : `<b class="md-ico">${m.kind === 'yt' ? '▶' : '🌐'}</b>`}<span><b>${esc(name(m))}</b><small>${m.kind === 'pages' ? `${m.count}쪽` : m.kind === 'video' || m.kind === 'local' ? '동영상' : m.kind === 'yt' ? '유튜브' : '웹페이지'} · 넣기</small></span></button>`).join('')}</div>
           ${this.lessonItems.length > 1 ? '<button type="button" class="chip" data-li="all">모두 새 페이지로 넣기</button>' : ''}`
           : '<p class="muted small">붙여 둔 자료가 없습니다. ⋯ 메뉴 → 주간 진도·차시 자료에서 미리 올려 둘 수 있습니다.</p>'}`;
       box.hidden = false;
@@ -228,6 +234,7 @@ export class MediaTools {
       if (!m) continue;
       if (m.kind === 'pages') await this.importPages(m.assets);
       else if (m.kind === 'video') await this.openVideo({ asset: m.asset });
+      else if (m.kind === 'local' && m.meta) await this.openVideo(m.meta);
       else if (m.kind === 'yt') await this.openVideo({ yt: m.yt, start: m.start || 0 });
       else if (m.kind === 'web') await this.openWeb(m.url);
     }
@@ -300,7 +307,8 @@ export class MediaTools {
     } finally { this.busy = false; }
   }
 
-  async uploadAndPick(file) {
+  async uploadAndPick(file, handle = null) {
+    if (isVideoFile(file)) { await this.openLocalVideo(file, handle); return; }
     const res = await this.upload(file);
     if (res) { this.showPicker(res); this.loadRecent(); }
   }
@@ -452,8 +460,19 @@ export class MediaTools {
     const r = await this.net.call('page:bg', { page_id: pid, bg_type: 'video', bg_meta: meta }).catch(() => null);
     if (!r || !r.ok) { this.toast('동영상을 띄우지 못했습니다' + (r && r.error ? ` (${r.error})` : '')); return false; }
     this.panel.hidden = true;
-    this.toast('동영상을 띄웠습니다. 아래 막대로 재생하면 같은 칠판을 보는 기기(합반 참여 반 포함)에서 함께 재생됩니다', 4500);
+    this.toast(meta.src === 'local'
+      ? '동영상을 띄웠습니다. 아래 막대로 재생하면 이 파일이 있는 기기에서 재생됩니다(파일은 서버에 올리지 않음)'
+      : '동영상을 띄웠습니다. 아래 막대로 재생하면 같은 칠판을 보는 기기(합반 참여 반 포함)에서 함께 재생됩니다', 4500);
     return true;
+  }
+
+  // 이 기기의 동영상 파일: 열어 보고(재생 가능·길이·미리보기) 이 기기에 기억한 뒤 페이지 배경으로
+  async openLocalVideo(file, handle = null, here = false) {
+    this.toast('동영상을 여는 중…', 1500);
+    const meta = await describeVideo(file);
+    if (!meta) { this.toast('이 기기에서 재생할 수 없는 동영상입니다(MP4·H.264 권장)', 5000); return false; }
+    await rememberVideo(file, handle);
+    return this.openVideo(meta, here);
   }
 
   // 크롬의 다른 탭·창을 한 장 찍어 새 페이지로
@@ -493,8 +512,11 @@ export class MediaTools {
       stage.classList.remove('drop');
       if (!has(e)) return;
       e.preventDefault();
+      const hp = dropHandle(e);                // 크롬: 파일 위치 기억(동영상을 다음에도 다시 열 수 있게)
       const f = e.dataTransfer.files[0];
-      if (f) this.uploadAndPick(f);
+      if (!f) return;
+      if (isVideoFile(f)) hp.then((h) => this.uploadAndPick(f, h && h.kind === 'file' ? h : null));
+      else this.uploadAndPick(f);
     });
     document.addEventListener('paste', (e) => {
       if (e.target.closest && e.target.closest('input, textarea, [contenteditable]')) return;

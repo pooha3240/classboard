@@ -1,4 +1,4 @@
-// classboard 저장판 설정: 기본판(wrangler.jsonc)과 같고 R2 저장소(FILES)만 더함.
+// classboard 확장판 설정: 기본판(wrangler.jsonc)과 같고 R2 저장소(FILES)만 더함.
 // 배포: npx wrangler deploy -c wrangler.storage.jsonc  (버킷은 처음 배포 때 자동으로 만들어짐. 계정에서 R2 를 먼저 켜야 함)
 // 기본판에서 바꿔도 Worker 이름이 같아 판서·설정은 그대로입니다.
 {

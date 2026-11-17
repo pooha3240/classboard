@@ -146,24 +146,24 @@ try {
   & npm.cmd ci --no-audit --no-fund --loglevel=error
   if ($LASTEXITCODE -ne 0 -or -not (Test-Path $WR)) { Fail "설치 도구를 받지 못했습니다. 인터넷 연결(학교망이면 보안 프로그램)을 확인하고 다시 실행하세요." }
 
-  # ── 판 고르기: 기본판(R2 없음) / 저장판(R2, 카드 등록 필요) ──
+  # ── 판 고르기: 기본판(R2 없음) / 확장판(R2, 카드 등록 필요) ──
   $edFile = Join-Path $Work 'edition.txt'
   $prev = if (Test-Path $edFile) { (Get-Content -LiteralPath $edFile -Raw).Trim() } else { '' }
   Write-Host ""
   Write-Host "  어느 판을 설치할까요?" -ForegroundColor Cyan
   Write-Host "    1) 기본판 - 카드 등록 없이 무료. 자료 700MB, 판서 재생 60일"
-  Write-Host "    2) 저장판 - Cloudflare R2(무료 10GB) 사용. 자료 6GB, 판서 기록 계속 보관, 백업"
+  Write-Host "    2) 확장판 - Cloudflare R2(무료 10GB) 사용. 자료 6GB, 판서 기록 계속 보관, 백업"
   Write-Host "               R2 를 켜려면 Cloudflare 에 카드(또는 PayPal) 등록이 필요합니다(무료 범위에서는 청구 없음)"
   $def = if ($prev -eq 'storage') { '2' } else { '1' }
   $ans = Read-Host "  번호를 넣고 Enter (그냥 Enter = $def)"
   if (-not $ans) { $ans = $def }
   $edition = if ($ans.Trim() -eq '2') { 'storage' } else { 'basic' }
   if ($prev -eq 'storage' -and $edition -eq 'basic') {
-    Warn "전에 저장판으로 설치했습니다. 기본판으로 바꾸면 R2 에 둔 자료와 보관한 판서 기록을 칠판에서 열 수 없게 됩니다."
+    Warn "전에 확장판으로 설치했습니다. 기본판으로 바꾸면 R2 에 둔 자료와 보관한 판서 기록을 칠판에서 열 수 없게 됩니다."
     if ((Read-Host "      그래도 기본판으로 할까요? (y/N)") -ne 'y') { $edition = 'storage' }
   }
   $Conf = if ($edition -eq 'storage') { 'wrangler.storage.jsonc' } else { 'wrangler.jsonc' }
-  Info ("선택: " + $(if ($edition -eq 'storage') { '저장판' } else { '기본판' }))
+  Info ("선택: " + $(if ($edition -eq 'storage') { '확장판' } else { '기본판' }))
 
   # ── 2. Cloudflare 로그인 ──
   Step 2 "Cloudflare 로그인"
@@ -187,7 +187,7 @@ try {
   $code = $LASTEXITCODE
   Remove-Item Env:\WRANGLER_OUTPUT_FILE_PATH
   if ($code -ne 0) {
-    if ($edition -eq 'storage') { Fail "올리지 못했습니다. 저장판은 먼저 Cloudflare 대시보드 → R2 Object Storage 에서 R2 를 켜야 합니다(카드 또는 PayPal 등록). 켠 뒤 다시 실행하세요. 그래도 안 되면 위의 영어 오류 메시지를 확인하세요." }
+    if ($edition -eq 'storage') { Fail "올리지 못했습니다. 확장판은 먼저 Cloudflare 대시보드 → R2 Object Storage 에서 R2 를 켜야 합니다(카드 또는 PayPal 등록). 켠 뒤 다시 실행하세요. 그래도 안 되면 위의 영어 오류 메시지를 확인하세요." }
     Fail "올리지 못했습니다. 위의 영어 오류 메시지를 확인하세요. (안내 문서의 '문제 해결' 참고)"
   }
   Set-Content -LiteralPath $edFile -Value $edition -Encoding ASCII
