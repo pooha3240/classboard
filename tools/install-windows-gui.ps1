@@ -313,11 +313,11 @@ function New-Num([int]$min, [int]$max, [int]$val) {
   return $n
 }
 function New-Flow {
-  $f = New-Object Windows.Forms.FlowLayoutPanel
-  $f.AutoSize = $true
-  $f.WrapContents = $false
-  $f.Margin = New-Object Windows.Forms.Padding(0)
-  return $f
+  $flow = New-Object Windows.Forms.FlowLayoutPanel
+  $flow.AutoSize = $true
+  $flow.WrapContents = $false
+  $flow.Margin = New-Object Windows.Forms.Padding(0)
+  return $flow
 }
 
 # ───────────── 창 ─────────────
@@ -729,9 +729,9 @@ function Show-EditionCompare {
     @('상태',                   '설치 가능 (시험판)',   '설치 가능',            '설치 가능',                  '곧 릴리스')
   )
 
-  $f = New-Object Windows.Forms.FlowLayoutPanel
-  $f.FlowDirection = 'TopDown'; $f.AutoSize = $true; $f.WrapContents = $false
-  $f.Controls.Add((New-Label '판마다 할 수 있는 일과 필요한 것이 다릅니다. 나중에 판을 바꿔도 판서·설정은 백업으로 옮길 수 있습니다.' $F $null ([int]($U * 40))))
+  $flow = New-Object Windows.Forms.FlowLayoutPanel
+  $flow.FlowDirection = 'TopDown'; $flow.AutoSize = $true; $flow.WrapContents = $false
+  $flow.Controls.Add((New-Label '판마다 할 수 있는 일과 필요한 것이 다릅니다. 나중에 판을 바꿔도 판서·설정은 백업으로 옮길 수 있습니다.' $F $null ([int]($U * 40))))
 
   $t = New-Object Windows.Forms.TableLayoutPanel
   $t.AutoSize = $true
@@ -768,8 +768,8 @@ function Show-EditionCompare {
       $t.Controls.Add((& $cellLabel $v $FS $color $back), $c, $r + 1)
     }
   }
-  $f.Controls.Add($t)
-  $f.Controls.Add((New-Label '이 설치 창은 로컬판·기본판·확장판을 설치합니다. 확장판은 Cloudflare 대시보드 → R2 Object Storage 에서 R2 를 먼저 켜야 합니다. 로컬판은 나중에 백업 파일 하나로 기본판에 옮길 수 있습니다.' $FS $cGray ([int]($U * 40))))
+  $flow.Controls.Add($t)
+  $flow.Controls.Add((New-Label '이 설치 창은 로컬판·기본판·확장판을 설치합니다. 확장판은 Cloudflare 대시보드 → R2 Object Storage 에서 R2 를 먼저 켜야 합니다. 로컬판은 나중에 백업 파일 하나로 기본판에 옮길 수 있습니다.' $FS $cGray ([int]($U * 40))))
 
   $bf = New-Flow
   $bLocal = New-Button '로컬판으로 설치'; $bLocal.DialogResult = 'OK'
@@ -778,8 +778,8 @@ function Show-EditionCompare {
   $bClose = New-Button '닫기'; $bClose.DialogResult = 'Cancel'
   $bBasic.Font = $FB
   $bf.Controls.Add($bLocal); $bf.Controls.Add($bBasic); $bf.Controls.Add($bStorage); $bf.Controls.Add($bClose)
-  $f.Controls.Add($bf)
-  $d.Controls.Add($f)
+  $flow.Controls.Add($bf)
+  $d.Controls.Add($flow)
   $d.CancelButton = $bClose
   $r = $d.ShowDialog($form)
   $d.Dispose()
@@ -795,19 +795,19 @@ function Ask-Text([string]$title, [string]$message, [string]$initial = '') {
   $d.StartPosition = 'CenterParent'
   $d.AutoSize = $true; $d.AutoSizeMode = 'GrowAndShrink'
   $d.Padding = New-Object Windows.Forms.Padding($U)
-  $f = New-Object Windows.Forms.FlowLayoutPanel
-  $f.FlowDirection = 'TopDown'; $f.AutoSize = $true; $f.WrapContents = $false
-  $f.Controls.Add((New-Label $message $F $null ([int]($U * 22))))
+  $flow = New-Object Windows.Forms.FlowLayoutPanel
+  $flow.FlowDirection = 'TopDown'; $flow.AutoSize = $true; $flow.WrapContents = $false
+  $flow.Controls.Add((New-Label $message $F $null ([int]($U * 22))))
   $t = New-Text ([int]($U * 14)) -Ascii
   $t.CharacterCasing = 'Lower'
   $t.Text = $initial
-  $f.Controls.Add($t)
+  $flow.Controls.Add($t)
   $bf = New-Flow
   $ok = New-Button '확인'; $ok.DialogResult = 'OK'
   $no = New-Button '멈추기'; $no.DialogResult = 'Cancel'
   $bf.Controls.Add($ok); $bf.Controls.Add($no)
-  $f.Controls.Add($bf)
-  $d.Controls.Add($f)
+  $flow.Controls.Add($bf)
+  $d.Controls.Add($flow)
   $d.AcceptButton = $ok; $d.CancelButton = $no
   $r = $d.ShowDialog($form)
   $v = $t.Text.Trim().ToLower()
@@ -823,21 +823,21 @@ function Choose-Item([string]$title, [string]$message, [string[]]$names) {
   $d.StartPosition = 'CenterParent'
   $d.AutoSize = $true; $d.AutoSizeMode = 'GrowAndShrink'
   $d.Padding = New-Object Windows.Forms.Padding($U)
-  $f = New-Object Windows.Forms.FlowLayoutPanel
-  $f.FlowDirection = 'TopDown'; $f.AutoSize = $true; $f.WrapContents = $false
-  $f.Controls.Add((New-Label $message $F $null ([int]($U * 22))))
+  $flow = New-Object Windows.Forms.FlowLayoutPanel
+  $flow.FlowDirection = 'TopDown'; $flow.AutoSize = $true; $flow.WrapContents = $false
+  $flow.Controls.Add((New-Label $message $F $null ([int]($U * 22))))
   $lb = New-Object Windows.Forms.ListBox
   $lb.Width = [int]($U * 22)
   $lb.Height = [int]($U * 1.3 * [Math]::Min(8, [Math]::Max(3, $names.Count))) + 6
   foreach ($n in $names) { [void]$lb.Items.Add($n) }
   $lb.SelectedIndex = 0
-  $f.Controls.Add($lb)
+  $flow.Controls.Add($lb)
   $bf = New-Flow
   $ok = New-Button '확인'; $ok.DialogResult = 'OK'
   $no = New-Button '멈추기'; $no.DialogResult = 'Cancel'
   $bf.Controls.Add($ok); $bf.Controls.Add($no)
-  $f.Controls.Add($bf)
-  $d.Controls.Add($f)
+  $flow.Controls.Add($bf)
+  $d.Controls.Add($flow)
   $d.AcceptButton = $ok; $d.CancelButton = $no
   $lb.Add_DoubleClick({ $this.FindForm().DialogResult = 'OK' })
   $r = $d.ShowDialog($form)
@@ -1269,9 +1269,9 @@ function Copy-LocalApp {
   foreach ($d in @('src', 'web')) { Copy-Item -LiteralPath (Join-Path $Root $d) -Destination (Join-Path $LocalApp $d) -Recurse -Force -ErrorAction Stop }
   New-Item -ItemType Directory -Force -Path (Join-Path $LocalApp 'tools') | Out-Null
   Copy-Item -LiteralPath (Join-Path $Root 'tools\local') -Destination (Join-Path $LocalApp 'tools\local') -Recurse -Force -ErrorAction Stop
-  foreach ($f in @('package.json', 'package-lock.json', 'tsconfig.json', 'wrangler.local.jsonc', 'LICENSE')) {
-    $src = Join-Path $Root $f
-    if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination (Join-Path $LocalApp $f) -Force -ErrorAction Stop }
+  foreach ($fileName in @('package.json', 'package-lock.json', 'tsconfig.json', 'wrangler.local.jsonc', 'LICENSE')) {
+    $src = Join-Path $Root $fileName
+    if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination (Join-Path $LocalApp $fileName) -Force -ErrorAction Stop }
   }
   if (-not (Test-Path -LiteralPath (Join-Path $LocalApp 'tools\local\classboard-local.ps1'))) { throw '칠판 파일을 복사하지 못했습니다. 압축을 끝까지 풀었는지 확인하세요.' }
 }
@@ -1320,8 +1320,8 @@ function Make-LocalShortcuts {
   try {
     # PNG 를 그대로 담은 .ico (Windows Vista 이후 지원): 머리 6바이트 + 항목 16바이트 + PNG
     $png = [IO.File]::ReadAllBytes((Join-Path $LocalApp 'web\helper\ext\icon128.png'))
-    $fs = [IO.File]::Create($ico)
-    $bw = New-Object IO.BinaryWriter($fs)
+    $icoStream = [IO.File]::Create($ico)
+    $bw = New-Object IO.BinaryWriter($icoStream)
     $bw.Write([UInt16]0); $bw.Write([UInt16]1); $bw.Write([UInt16]1)
     $bw.Write([byte]128); $bw.Write([byte]128); $bw.Write([byte]0); $bw.Write([byte]0)
     $bw.Write([UInt16]1); $bw.Write([UInt16]32); $bw.Write([UInt32]$png.Length); $bw.Write([UInt32]22)
