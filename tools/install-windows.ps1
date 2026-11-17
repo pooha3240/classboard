@@ -150,6 +150,17 @@ try {
   $edFile = Join-Path $Work 'edition.txt'
   $prev = if (Test-Path $edFile) { (Get-Content -LiteralPath $edFile -Raw).Trim() } else { '' }
   Write-Host ""
+  Write-Host "  판 비교" -ForegroundColor Cyan
+  Write-Host "                 로컬판        기본판          확장판               서버판"
+  Write-Host "    설치 위치    교사 PC 한 대  Cloudflare 무료  Cloudflare 무료 + R2  학교·개인 서버"
+  Write-Host "    가입·카드    필요 없음      가입(카드 없음)  가입 + 카드/PayPal    필요 없음"
+  Write-Host "    학생 호출    안 됨          됨               됨                    됨"
+  Write-Host "    자료 공간    PC 디스크      700MB            6GB                   서버 디스크"
+  Write-Host "    판서 재생    계속           60일             계속                  계속"
+  Write-Host "    동영상 파일  이 기기 재생   이 기기 재생     이 기기 재생          서버에 올려 공유"
+  Write-Host "    합반·원격    안 됨          안 됨            안 됨                 됨"
+  Write-Host "    상태         준비 중        설치 가능        설치 가능             곧 릴리스"
+  Write-Host ""
   Write-Host "  어느 판을 설치할까요?" -ForegroundColor Cyan
   Write-Host "    1) 기본판 - 카드 등록 없이 무료. 자료 700MB, 판서 재생 60일"
   Write-Host "    2) 확장판 - Cloudflare R2(무료 10GB) 사용. 자료 6GB, 판서 기록 계속 보관, 백업"

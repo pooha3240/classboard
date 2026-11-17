@@ -419,10 +419,17 @@ $rbBasic.Text = '기본판'; $rbBasic.AutoSize = $true
 $rbStorage = New-Object Windows.Forms.RadioButton
 $rbStorage.Text = '확장판'; $rbStorage.AutoSize = $true
 $rbStorage.Margin = New-Object Windows.Forms.Padding([int]($U * 1.2), 3, 3, 3)
+$lnkCompare = New-Object Windows.Forms.LinkLabel
+$lnkCompare.Text = '판 비교 보기'
+$lnkCompare.AutoSize = $true
+$lnkCompare.Font = $FB
+$lnkCompare.Margin = New-Object Windows.Forms.Padding([int]($U * 1.6), 4, 3, 3)
+$lnkCompare.Add_LinkClicked({ Show-EditionCompare })
 $edFlow.Controls.Add($rbBasic)
 $edFlow.Controls.Add($rbStorage)
+$edFlow.Controls.Add($lnkCompare)
 if ($PrevEdition -eq 'storage') { $rbStorage.Checked = $true } else { $rbBasic.Checked = $true }
-[void](Add-Row 'edition' '판' $edFlow '기본판: 카드 등록 없이 무료(자료 700MB, 판서 재생 60일). 확장판: R2 사용(자료 6GB, 판서 기록 계속 보관). 확장판은 Cloudflare 에 카드(또는 PayPal)를 등록하고 R2 를 먼저 켜야 합니다.')
+[void](Add-Row 'edition' '판' $edFlow '기본판: 카드 등록 없이 무료(자료 700MB, 판서 재생 60일). 확장판: R2 사용(자료 6GB, 판서 기록 계속 보관). 확장판은 Cloudflare 에 카드(또는 PayPal)를 등록하고 R2 를 먼저 켜야 합니다. 로컬판(가입 없이 교사 PC 한 대)과 서버판(합반·원격 수업)은 [판 비교 보기]에 있습니다.')
 
 $tbSub = New-Text ([int]($U * 13)) -Ascii
 $tbSub.CharacterCasing = 'Lower'
@@ -635,6 +642,89 @@ function Set-Buttons([string]$state) {
 }
 
 # ───────────── 작은 대화 상자 ─────────────
+
+# 판 비교: 네 판을 한눈에. 기본판·확장판은 여기서 바로 고름(로컬판은 준비 중, 서버판은 곧 릴리스)
+function Show-EditionCompare {
+  $d = New-Object Windows.Forms.Form
+  $d.Text = '판 비교 - 어느 판을 설치할까요?'; $d.Font = $F
+  $d.FormBorderStyle = 'FixedDialog'; $d.MaximizeBox = $false; $d.MinimizeBox = $false
+  $d.StartPosition = 'CenterParent'
+  $d.AutoSize = $true; $d.AutoSizeMode = 'GrowAndShrink'
+  $d.Padding = New-Object Windows.Forms.Padding($U)
+
+  $cols = @('로컬판', '기본판', '확장판', '서버판')
+  $rows = @(
+    @('설치 위치',            '교사 PC 한 대',        'Cloudflare 무료 계정', 'Cloudflare 무료 계정 + R2', '학교·개인 서버(Docker)'),
+    @('가입·카드',            '필요 없음',            'Cloudflare 가입 (카드 없음)', '가입 + 카드 또는 PayPal 등록 (무료 10GB 안에서는 청구 없음)', '필요 없음'),
+    @('학생 호출(칠판에 풀기)', '안 됨',               '됨',                   '됨',                         '됨'),
+    @('교사 태블릿·전자칠판 함께 쓰기', '안 됨 (기기 하나)', '됨',             '됨',                         '됨'),
+    @('집에서 판서 기록 보기',  '안 됨',               '됨',                   '됨',                         '됨'),
+    @('사진·PDF 자료',         'PC 디스크만큼',        '700MB',                '6GB',                        '서버 디스크만큼'),
+    @('차시에 붙이는 자료',     'PC 디스크만큼',        '300MB',                '2GB',                        '서버 디스크만큼'),
+    @('판서 재생 기록',         '계속 보관',            '60일 (그 뒤 완성된 판서만)', '계속 보관',            '계속 보관'),
+    @('동영상 파일',            '이 기기에서 재생',      '이 기기에서 재생',      '이 기기에서 재생',            '서버에 올려 모든 기기에서'),
+    @('합반·원격 수업',         '안 됨',               '안 됨',                '안 됨',                      '됨'),
+    @('백업 내려받기·되살리기', '됨',                  '됨',                   '됨',                         '됨'),
+    @('이런 분께',              '가입 없이 판서·진도 도구만 쓸 분', '대부분의 선생님', '판서 기록을 오래 쌓거나 자료를 많이 둘 분', '서버를 운영하는 분'),
+    @('상태',                   '준비 중',              '설치 가능',            '설치 가능',                  '곧 릴리스')
+  )
+
+  $f = New-Object Windows.Forms.FlowLayoutPanel
+  $f.FlowDirection = 'TopDown'; $f.AutoSize = $true; $f.WrapContents = $false
+  $f.Controls.Add((New-Label '판마다 할 수 있는 일과 필요한 것이 다릅니다. 나중에 판을 바꿔도 판서·설정은 백업으로 옮길 수 있습니다.' $F $null ([int]($U * 40))))
+
+  $t = New-Object Windows.Forms.TableLayoutPanel
+  $t.AutoSize = $true
+  $t.CellBorderStyle = 'Single'
+  $t.BackColor = [Drawing.Color]::White
+  $t.ColumnCount = 5
+  $t.RowCount = $rows.Count + 1
+  $t.Margin = New-Object Windows.Forms.Padding(3, [int]($U * 0.5), 3, [int]($U * 0.5))
+  for ($c = 0; $c -lt 5; $c++) { [void]$t.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle([Windows.Forms.SizeType]::AutoSize))) }
+  $cellW = [int]($U * 8.2)
+  $cellLabel = {
+    param([string]$text, $font, $color, $back)
+    $l = New-Label $text $font $color $cellW
+    $l.Margin = New-Object Windows.Forms.Padding([int]($U * 0.3), [int]($U * 0.15), [int]($U * 0.3), [int]($U * 0.15))
+    if ($back) { $l.BackColor = $back }
+    return $l
+  }
+  $cHead = [Drawing.Color]::FromArgb(232, 240, 254)
+  $t.Controls.Add((& $cellLabel '' $FB $null $null), 0, 0)
+  for ($c = 0; $c -lt 4; $c++) {
+    $name = $cols[$c]
+    $color = if ($c -eq 1 -or $c -eq 2) { $cBlue } else { $cGray }
+    $t.Controls.Add((& $cellLabel $name $FBig $color $null), $c + 1, 0)
+  }
+  for ($r = 0; $r -lt $rows.Count; $r++) {
+    $row = $rows[$r]
+    $t.Controls.Add((& $cellLabel $row[0] $FB $null $null), 0, $r + 1)
+    for ($c = 1; $c -le 4; $c++) {
+      $v = $row[$c]
+      $color = $null
+      if ($v -like '안 됨*') { $color = $cGray }
+      elseif ($v -eq '됨' -or $v -eq '설치 가능') { $color = $cGreen }
+      $back = if ($c -eq 2 -or $c -eq 3) { $cHead } else { $null }
+      $t.Controls.Add((& $cellLabel $v $FS $color $back), $c, $r + 1)
+    }
+  }
+  $f.Controls.Add($t)
+  $f.Controls.Add((New-Label '이 설치 창은 기본판·확장판을 설치합니다. 확장판은 Cloudflare 대시보드 → R2 Object Storage 에서 R2 를 먼저 켜야 합니다.' $FS $cGray ([int]($U * 40))))
+
+  $bf = New-Flow
+  $bBasic = New-Button '기본판으로 설치'; $bBasic.DialogResult = 'Yes'
+  $bStorage = New-Button '확장판으로 설치'; $bStorage.DialogResult = 'No'
+  $bClose = New-Button '닫기'; $bClose.DialogResult = 'Cancel'
+  $bBasic.Font = $FB
+  $bf.Controls.Add($bBasic); $bf.Controls.Add($bStorage); $bf.Controls.Add($bClose)
+  $f.Controls.Add($bf)
+  $d.Controls.Add($f)
+  $d.CancelButton = $bClose
+  $r = $d.ShowDialog($form)
+  $d.Dispose()
+  if ($r -eq 'Yes') { $rbBasic.Checked = $true }
+  elseif ($r -eq 'No') { $rbStorage.Checked = $true }
+}
 
 function Ask-Text([string]$title, [string]$message, [string]$initial = '') {
   $d = New-Object Windows.Forms.Form
@@ -1402,7 +1492,13 @@ $form.Add_FormClosing({
     $e.Cancel = $true
   }
 })
-$form.Add_Shown({ $form.Activate(); if ($script:Mode -ne 'update') { $tbSub.Focus() } })
+$form.Add_Shown({
+  $form.Activate()
+  if ($script:Mode -ne 'update') {
+    if (-not $PrevEdition) { Show-EditionCompare }     # 처음 설치: 판을 고르기 전에 비교부터
+    $tbSub.Focus()
+  }
+})
 
 $form.AcceptButton = $btnMain
 Show-Page 'form'
