@@ -508,6 +508,14 @@ $chkAutoStart.Margin = New-Object Windows.Forms.Padding(3, [int]($U * 0.5), 3, 0
 if ($LocalInfo -and $null -ne $LocalInfo.autostart) { $chkAutoStart.Checked = [bool]$LocalInfo.autostart }
 [void](Add-Row 'autostart' '' $chkAutoStart)
 
+$chkMigrate = New-Object Windows.Forms.CheckBox
+$chkMigrate.Text = '이 PC 의 로컬판 판서 기록·진도표·자료를 새 칠판으로 옮기기'
+$chkMigrate.AutoSize = $true
+$chkMigrate.Checked = $true
+$chkMigrate.Font = $FB
+$chkMigrate.Margin = New-Object Windows.Forms.Padding(3, [int]($U * 0.5), 3, 0)
+[void](Add-Row 'migrate' '' $chkMigrate '설치가 끝나면 로컬판 백업을 받아 새 칠판에 되살립니다(백업 파일도 이 PC 에 남김). 다 옮긴 뒤 로컬판을 지울지 묻습니다.')
+
 $lnkMode = New-Object Windows.Forms.LinkLabel
 $lnkMode.AutoSize = $true
 $lnkMode.Font = $FS
@@ -647,6 +655,7 @@ function Apply-Mode {
   $lblTitle.Text = 'classboard 전자칠판 설치'
   if ($rbLocal.Checked) { Apply-ModeLocal; return }
   Show-Row 'autostart' $false
+  Show-Row 'migrate' ([bool]$LocalInfo -and $script:Mode -ne 'update')
   Show-Row 'relogin' $true
   Show-Row 'modelink' $true
   $lnkRemove.Text = '칠판 지우기(Cloudflare 와 이 PC 에서 삭제)'
@@ -672,6 +681,7 @@ function Apply-ModeLocal {
   foreach ($k in @('sub', 'id', 'pw', 'pw2', 'relogin', 'modelink')) { Show-Row $k $false }
   foreach ($k in @('class', 'name')) { Show-Row $k (-not $installed) }
   Show-Row 'autostart' $true
+  Show-Row 'migrate' $false
   Show-Row 'update' $installed
   $lnkRemove.Text = '로컬판 지우기(이 PC 의 칠판과 판서 기록 삭제)'
   Show-Row 'remove' $installed
@@ -769,7 +779,7 @@ function Show-EditionCompare {
     }
   }
   $flow.Controls.Add($t)
-  $flow.Controls.Add((New-Label '이 설치 창은 로컬판·기본판·확장판을 설치합니다. 확장판은 Cloudflare 대시보드 → R2 Object Storage 에서 R2 를 먼저 켜야 합니다. 로컬판은 나중에 백업 파일 하나로 기본판에 옮길 수 있습니다.' $FS $cGray ([int]($U * 40))))
+  $flow.Controls.Add((New-Label '이 설치 창은 로컬판·기본판·확장판을 설치합니다. 확장판은 Cloudflare 대시보드 → R2 Object Storage 에서 R2 를 먼저 켜야 합니다. 로컬판으로 시작했다가 기본판·확장판을 설치하면 설치 창이 로컬판 기록을 옮겨 줍니다.' $FS $cGray ([int]($U * 40))))
 
   $bf = New-Flow
   $bLocal = New-Button '로컬판으로 설치'; $bLocal.DialogResult = 'OK'
@@ -1154,7 +1164,14 @@ function Do-Install {
   $upd = ($script:Mode -eq 'update')
   $last = '학급·교사 정보 넣기'
   if ($upd) { $last = '새 버전 확인' }
-  Init-Steps @('설치 도구 준비', 'Cloudflare 로그인', '계정과 칠판 주소', '칠판 올리기', '설치 키와 주소 열림 확인', $last)
+  $script:WantMigrate = ([bool]$LocalInfo -and -not $upd -and $chkMigrate.Checked)
+  $script:Migrated = $null
+  $script:MigrateFile = $null
+  $script:MigrateError = $null
+  $script:LocalRemoved = $false
+  $steps = @('설치 도구 준비', 'Cloudflare 로그인', '계정과 칠판 주소', '칠판 올리기', '설치 키와 주소 열림 확인', $last)
+  if ($script:WantMigrate) { $steps += '로컬판 기록 옮기기' }
+  Init-Steps $steps
   Show-Page 'run'
   Set-Buttons 'running'
   $bar.Visible = $true
@@ -1221,6 +1238,27 @@ function Do-Install {
     }
     Save-Info
     $script:Health = $health
+    if ($script:WantMigrate) {
+      $cur = 6; Set-Step 6 'run'
+      if (-not $script:SetupDone) {
+        Log '새로 처음 설정한 칠판이 아니라서(이미 쓰던 칠판이거나 주소가 아직 안 열림) 로컬판 기록은 옮기지 않았습니다.'
+        $script:MigrateError = '새 칠판이 아직 열리지 않았거나 이미 쓰던 칠판이라 옮기지 않았습니다.'
+        Set-Step 6 'skip'
+      } else {
+        try {
+          Migrate-Local
+          Set-Step 6 'ok'
+          $a = Msg "로컬판 기록을 새 칠판으로 옮겼습니다($($script:Migrated.rows)줄, 자료 $($script:Migrated.blobs)장).`n`n이제 이 PC 의 로컬판을 지울까요?`n(바로가기·칠판 파일·판서 기록을 지웁니다. 옮기기 전에 받은 백업 파일은 남깁니다.)" 'YesNo' 'Question'
+          if ($a -eq 'Yes') { Set-Status '로컬판을 지우는 중…'; Remove-LocalAll; $script:LocalRemoved = $true }
+        } catch {
+          if ("$_" -eq 'CANCELLED') { throw }
+          $script:MigrateError = "$($_.Exception.Message)"
+          if (-not $script:MigrateError) { $script:MigrateError = "$_" }
+          Log "로컬판 기록 옮기기 실패: $($script:MigrateError)"
+          Set-Step 6 'fail'
+        }
+      }
+    }
     Show-Done
   } catch {
     $msg = "$($_.Exception.Message)"
@@ -1468,6 +1506,86 @@ function Show-DoneLocal([bool]$upd) {
   $lblDone.Text = ($t -join "`n")
 }
 
+function Remove-LocalShortcuts { foreach ($l in (Local-Shortcuts)) { Remove-Item -LiteralPath $l -Force -ErrorAction SilentlyContinue } }
+function Remove-LocalApp {
+  Remove-Dir $LocalApp
+  Remove-Item -LiteralPath $LocalCfgPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath (Join-Path $Work 'local-server.log') -Force -ErrorAction SilentlyContinue
+}
+function Remove-LocalData {
+  Remove-Dir $LocalData
+  if (Test-Path -LiteralPath $LocalData) { throw "판서 기록 폴더를 다 지우지 못했습니다: $LocalData" }
+  $script:LocalInfo = $null
+}
+function Remove-LocalAll { Stop-Local; Remove-LocalShortcuts; Remove-LocalApp; Remove-LocalData }
+
+# 로컬판 → 새 칠판(기본판·확장판): 로컬판 백업을 조각마다 받아 그대로 새 칠판에 되살림.
+# 큰 JSON 을 PowerShell 로 다시 만들지 않도록(깊이·크기 제한) 서버가 준 글자를 그대로 넘깁니다.
+# 백업 줄은 모두 {"t":"…"} 로 시작하고 문자열 안의 따옴표는 \" 로 바뀌어 있으므로 '},{"t":"' 에서 줄을 나눌 수 있습니다.
+function Post-Raw([string]$url, [string]$json, [string]$token = '', [int]$timeoutSec = 120) {
+  $h = @{ 'Content-Type' = 'application/json; charset=utf-8' }
+  if ($token) { $h['Authorization'] = "Bearer $token" }
+  $wc = New-Web $h
+  $t = $wc.UploadStringTaskAsync($url, 'POST', $json)
+  Wait-Task $t $timeoutSec $wc
+  return $t.Result
+}
+
+function Migrate-Local {
+  $lurl = "http://127.0.0.1:$LocalPort"
+  Set-Status '로컬판 칠판을 켜는 중…'
+  $up = $false
+  try { $up = (((Fetch-Text "$lurl/api/health" 4) | ConvertFrom-Json).edition -eq 'local') } catch { if ("$_" -eq 'CANCELLED') { throw } }
+  if (-not $up) {
+    $saved = $script:Url; $script:Url = $lurl
+    try { [void](Start-LocalServer) } finally { $script:Url = $saved }
+  }
+  $ltok = ((Post-Raw "$lurl/eboard-api/auth/local" '{}' '' 30) | ConvertFrom-Json).token
+  if (-not $ltok) { throw '로컬판 칠판에 들어가지 못했습니다.' }
+  Set-Status '새 칠판에 로그인하는 중…'
+  $login = (Post-Json "$($script:Url)/eboard-api/login" @{ login_id = $tbId.Text.Trim(); password = $tbPw.Text } 30) | ConvertFrom-Json
+  if (-not $login.token) { throw '새 칠판에 로그인하지 못했습니다.' }
+  $ctok = [string]$login.token
+
+  $file = Join-Path $Work ("local-backup-" + (Get-Date -Format 'yyyyMMdd-HHmm') + '.ndjson')
+  $writer = New-Object IO.StreamWriter($file, $false, (New-Object Text.UTF8Encoding($false)))
+  $script:MigrateFile = $file
+  $tot = [pscustomobject]@{ rows = 0; blobs = 0; skipped = 0 }
+  try {
+    $cursor = $null; $n = 0; $begun = $false
+    do {
+      $q = '/eboard-api/backup/part?media=1'
+      if ($cursor) { $q += '&cursor=' + [Uri]::EscapeDataString($cursor) }
+      $txt = Fetch-Text "$lurl$q" 120 @{ Authorization = "Bearer $ltok" }
+      $a = $txt.IndexOf('"lines":['); $b = $txt.LastIndexOf(',"next":')
+      if ($a -lt 0 -or $b -lt 0) { throw '로컬판 백업을 읽지 못했습니다.' }
+      $arr = $txt.Substring($a + 8, $b - $a - 8)
+      $nextRaw = $txt.Substring($b + 8, $txt.Length - $b - 9)
+      $cursor = ('{"n":' + $nextRaw + '}' | ConvertFrom-Json).n
+      $inner = $arr.Substring(1, $arr.Length - 2)
+      if ($inner) { $writer.Write(($inner -replace '\},\{"t":"', "}`n{`"t`":`"") + "`n") }
+      if (-not $begun) {
+        $m = $inner.IndexOf('},{"t":"config"')
+        if (-not $inner.StartsWith('{"t":"meta"') -or $m -lt 0) { throw '로컬판 백업의 첫 줄이 맞지 않습니다.' }
+        $meta = $inner.Substring(0, $m + 1)
+        $pwJson = ConvertTo-Json ([string]$tbPw.Text) -Compress
+        Set-Status '새 칠판에 되살리는 중…'
+        [void](Post-Raw "$($script:Url)/eboard-api/backup/restore/begin" ('{"password":' + $pwJson + ',"meta":' + $meta + '}') $ctok 60)
+        $begun = $true
+      }
+      if ($inner) {
+        $r = (Post-Raw "$($script:Url)/eboard-api/backup/restore/rows" ('{"lines":' + $arr + '}') $ctok 300) | ConvertFrom-Json
+        $tot.rows += [int]$r.rows; $tot.blobs += [int]$r.blobs; $tot.skipped += [int]$r.skipped
+      }
+      $n++
+      Set-Status "새 칠판에 되살리는 중… ($n 조각, $($tot.rows)줄, 자료 $($tot.blobs)장)"
+    } while ($cursor)
+    [void](Post-Raw "$($script:Url)/eboard-api/backup/restore/end" '{}' $ctok 60)
+  } finally { $writer.Close() }
+  Log "로컬판 기록 옮기기: $($tot.rows)줄, 자료 $($tot.blobs)장, 건너뜀 $($tot.skipped). 백업 파일 $file"
+  $script:Migrated = $tot
+}
+
 function Do-UninstallLocal {
   $script:Action = 'uninstall-local'
   $script:Running = $true
@@ -1483,19 +1601,9 @@ function Do-UninstallLocal {
   $cur = 0
   try {
     Set-Step 0 'run'; Stop-Local; Set-Step 0 'ok'
-    $cur = 1; Set-Step 1 'run'
-    foreach ($l in (Local-Shortcuts)) { Remove-Item -LiteralPath $l -Force -ErrorAction SilentlyContinue }
-    Set-Step 1 'ok'
-    $cur = 2; Set-Step 2 'run'; Set-Status '칠판 파일을 지우는 중…'
-    Remove-Dir $LocalApp
-    Remove-Item -LiteralPath $LocalCfgPath -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath (Join-Path $Work 'local-server.log') -Force -ErrorAction SilentlyContinue
-    Set-Step 2 'ok'
-    $cur = 3; Set-Step 3 'run'; Set-Status '판서 기록을 지우는 중…'
-    Remove-Dir $LocalData
-    if (Test-Path -LiteralPath $LocalData) { throw "판서 기록 폴더를 다 지우지 못했습니다: $LocalData" }
-    Set-Step 3 'ok'
-    $script:LocalInfo = $null
+    $cur = 1; Set-Step 1 'run'; Remove-LocalShortcuts; Set-Step 1 'ok'
+    $cur = 2; Set-Step 2 'run'; Set-Status '칠판 파일을 지우는 중…'; Remove-LocalApp; Set-Step 2 'ok'
+    $cur = 3; Set-Step 3 'run'; Set-Status '판서 기록을 지우는 중…'; Remove-LocalData; Set-Step 3 'ok'
     Show-Page 'done'
     Set-Buttons 'removed'
     $lnkUrl.Visible = $false
@@ -1761,6 +1869,17 @@ function Show-Done {
     $t += '  1. 칠판 메뉴(⋯) → 교시·시간표 설정에서 우리 학교 종 시각 넣기'
     $t += '  2. 교실 전자칠판 브라우저로 주소를 열어 로그인 → "이 기기를 전자칠판으로 등록"'
     $t += '  3. 학생은 칠판의 학급 도구 → 호출 탭의 QR 로 들어옵니다'
+  }
+  if ($script:WantMigrate) {
+    $t += ''
+    if ($script:Migrated) {
+      $t += "로컬판 기록을 옮겼습니다($($script:Migrated.rows)줄, 자료 $($script:Migrated.blobs)장$(if ($script:Migrated.skipped) { ", 공간이 모자라 건너뛴 자료 $($script:Migrated.skipped)개" })). 학급도 로컬판 값으로 바뀌었습니다."
+      if ($script:LocalRemoved) { $t += '이 PC 의 로컬판은 지웠습니다.' } else { $t += '로컬판은 그대로 두었습니다. 필요 없으면 설치 창 → 로컬판 → 로컬판 지우기.' }
+    } else {
+      $t += "로컬판 기록은 옮기지 못했습니다: $($script:MigrateError)"
+      $t += '로컬판 칠판의 교시·시간표 설정 → 저장 공간과 백업에서 백업을 받아, 새 칠판의 같은 곳에서 되살리세요.'
+    }
+    if ($script:MigrateFile) { $t += "백업 파일(보관용): $($script:MigrateFile)" }
   }
   $lblDone.Text = ($t -join "`n")
 }
